@@ -1,6 +1,6 @@
-# Vision One Deployment Tool - PowerShell Edition
+# Vision One Deployment Tool - PowerShell Edition **STILL WORK IN PROGRESS**
 
-A simple, reliable PowerShell-based deployment tool for Trend Micro Vision One agents across Windows networks.
+A simple, reliable PowerShell-based deployment tool for Trend Micro Vision One agents across Windows networks. 
 
 ## 🚀 **Key Features**
 
