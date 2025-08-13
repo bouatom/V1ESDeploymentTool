@@ -1,0 +1,7 @@
+# VisionOne SEP Target Hosts
+# Add one IP address per line
+# Lines starting with # are ignored
+
+10.0.5.127
+# 10.0.5.128
+# 10.0.5.129
