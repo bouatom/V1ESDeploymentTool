@@ -1,6 +1,6 @@
 # VisionOne SEP Deployment Tool - PowerShell Edition
 
-A simple, reliable PowerShell-based deployment tool for Trend Micro VisionOne Server & Endpoint Protection (SEP) agents across Windows networks.
+A simple, reliable PowerShell-based deployment tool for Trend Micro Vision One agents across Windows networks.
 
 ## 🚀 **Key Features**
 
