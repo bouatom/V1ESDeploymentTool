@@ -25,7 +25,7 @@ A simple, reliable PowerShell-based deployment tool for Trend Micro Vision One a
 - `config.json` - Legacy configuration (not used by PowerShell scripts)
 
 ### **Installer**
-- `installer/` - Directory containing VisionOne SEP installer files
+- `installer/` - Directory to place your extracted installer files
 
 ## 🔧 **Quick Start**
 
