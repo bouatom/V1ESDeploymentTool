@@ -91,13 +91,6 @@
 - [ ] **Audit Trail**: `deployment.log` preserved for compliance
 - [ ] **Clean Up**: Temporary files removed from target machines
 
-## 📞 **Support Contacts**
-
-- **Technical Issues**: [Your IT Support]
-- **Vision One Support**: [Trend Micro Support]
-- **Network Issues**: [Network Team]
-- **Security Questions**: [Security Team]
-
 ---
 
 **Last Updated**: $(Get-Date -Format "yyyy-MM-dd")
