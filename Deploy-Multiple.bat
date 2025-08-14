@@ -1,8 +1,8 @@
 @echo off
-REM Deploy VisionOne SEP to multiple machines
+REM Deploy Vision One Endpoint Security Agent to multiple machines
 REM Edit the IP addresses below for your target machines
 
-echo Starting VisionOne SEP deployment to multiple machines...
+echo Starting Vision One Endpoint Security Agent deployment to multiple machines...
 echo.
 
 powershell -ExecutionPolicy Bypass -File Deploy-Simple.ps1 -TargetIP 10.0.5.127

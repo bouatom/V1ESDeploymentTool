@@ -1,4 +1,4 @@
-# VisionOne SEP Deployment Tool - Complete File Documentation
+# Vision One Endpoint Security Agent Deployment Tool - Complete File Documentation
 
 ## 🚀 **Main Deployment Scripts**
 
@@ -102,23 +102,41 @@
 
 ## 📦 **Installer Components**
 
-### **`installer/`** - VisionOne SEP Installer Directory
-**Purpose**: Contains all files needed for VisionOne SEP installation
+### **`installer/`** - Vision One Endpoint Security Agent Installer Directory
+**Purpose**: Contains the Vision One Endpoint Security Agent installer ZIP file
 
-#### **`installer/EndpointBasecamp.exe`** - Main Installer Executable
-**Purpose**: Trend Micro VisionOne SEP agent installer
-**Type**: Windows executable installer
-**Usage**: Automatically copied to target machines and executed
+#### **IMPORTANT: Unique Installer Requirement**
+**Each user must obtain their own personalized Vision One Endpoint Security Agent installer:**
+- Download your unique installer ZIP from the Trend Micro Vision One portal
+- Each organization/user has a unique installer that cannot be shared
+- Place the entire ZIP file in the `installer/` directory
+- **Do not extract the ZIP file** - scripts handle extraction automatically
 
-#### **`installer/config.json`** - Installer Configuration
-**Purpose**: Configuration file for the VisionOne SEP installer
-**Contains**: Installation parameters, server settings, policy configurations
-**Usage**: Automatically copied with installer to target machines
+#### **How the Installer Works:**
+1. **Detection**: Scripts automatically find any `.zip` file in the installer directory
+2. **Smart Selection**: If multiple ZIP files exist (e.g., duplicates with `(1)`, `(2)` suffixes), scripts prefer the original filename or most recent file
+3. **Transfer**: The selected ZIP file is copied to the target machine's temp directory
+4. **Remote Extraction**: ZIP is extracted on the target machine using .NET compression
+5. **Installation**: The extracted executable is run with silent installation parameters
+6. **Cleanup**: Temporary files are removed after installation
 
-#### **`installer/packages/`** - Supporting Installation Files
-**Purpose**: Additional files and dependencies required by the installer
-**Contents**: Various subdirectories with installer components and dependencies
-**Usage**: Entire directory structure copied to target machines
+#### **Handling Duplicate Downloads:**
+- If you have multiple ZIP files (e.g., `installer.zip`, `installer (1).zip`, `installer (2).zip`)
+- Scripts will automatically prefer the original filename without duplicate suffixes
+- If all files have duplicate suffixes, the most recent file is selected
+- Clear messaging shows which file was selected during deployment
+
+#### **Error Handling and Validation:**
+- **Early Validation**: Scripts check for installer availability before attempting deployment
+- **Directory Validation**: Verifies installer directory exists and is accessible
+- **File Validation**: Confirms ZIP files are present and not corrupted
+- **Helpful Error Messages**: Provides step-by-step instructions when installers are missing
+- **Graceful Failure**: Scripts exit cleanly with clear guidance when validation fails
+
+#### **Supported Installer Formats:**
+- **ZIP files containing Vision One Endpoint Security Agent installer and supporting files**
+- Scripts automatically detect the main executable within the ZIP
+- Supports various Vision One Endpoint Security Agent installer versions and configurations
 
 ## 📚 **Documentation Files**
 
@@ -174,6 +192,7 @@
 ### **Essential Files to Edit Before Use**
 1. **`Config.ps1`** - Add your domain credentials
 2. **`hosts.txt`** - Add your target IP addresses (optional)
+3. **`installer/`** - Place your unique Vision One Endpoint Security Agent installer ZIP file
 
 ### **Files to Copy to Target Machines**
 1. **`configure_target_machine.bat`** - Run as Administrator

@@ -1,4 +1,4 @@
-# Security Considerations for VisionOne SEP Deployment Tool
+# Security Considerations for Vision One Endpoint Security Agent Deployment Tool
 
 ## Deployment Method Risk Assessment
 
@@ -157,7 +157,7 @@
 
 ### If Scheduled Tasks Are Left Behind
 ```bash
-# List all VisionOne SEP installation tasks
+# List all Vision One Endpoint Security Agent installation tasks
 schtasks /query /s TARGET_HOST /fo csv | findstr "VisionOneSEPInstall"
 
 # Remove orphaned tasks

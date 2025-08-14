@@ -1,5 +1,5 @@
 # ============================================================================
-# VisionOne SEP Network Scanner
+# Vision One Endpoint Security Agent Network Scanner
 # ============================================================================
 #
 # PURPOSE: Discover and identify Windows hosts in network ranges
@@ -157,7 +157,7 @@ function Test-WindowsHost {
 }
 
 # Main execution
-Write-Host "=== Network Scanner for VisionOne SEP Deployment ===" -ForegroundColor Cyan
+Write-Host "=== Network Scanner for Vision One Endpoint Security Agent Deployment ===" -ForegroundColor Cyan
 Write-Host "Scanning: $CIDR" -ForegroundColor White
 Write-Host "Windows Only: $WindowsOnly" -ForegroundColor White
 Write-Host ""

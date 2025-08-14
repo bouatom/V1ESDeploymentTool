@@ -1,4 +1,4 @@
-# VisionOne SEP Deployment Configuration
+# Vision One Endpoint Security Agent Deployment Configuration
 # Edit these settings for your environment
 
 # Credentials - EDIT THESE FOR YOUR ENVIRONMENT
@@ -36,4 +36,4 @@ function Get-DeploymentCredentials {
     return New-Object System.Management.Automation.PSCredential($Global:DeploymentConfig.Username, $pass)
 }
 
-Write-Host "Configuration loaded for VisionOne SEP Deployment" -ForegroundColor Green
+Write-Host "Configuration loaded for Vision One Endpoint Security Agent Deployment" -ForegroundColor Green

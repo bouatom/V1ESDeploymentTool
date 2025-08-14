@@ -1,8 +1,8 @@
 # ============================================================================
-# VisionOne SEP Deployment Script - Primary Deployment Engine
+# Vision One Endpoint Security Agent Deployment Script - Primary Deployment Engine
 # ============================================================================
 # 
-# PURPOSE: Full-featured deployment script for Trend Micro VisionOne SEP
+# PURPOSE: Full-featured deployment script for Trend Micro Vision One Endpoint Security Agent
 # FEATURES: 
 #   - Single host, multiple hosts, CIDR network scanning
 #   - Parallel deployment with configurable concurrency
@@ -20,9 +20,16 @@
 #
 # REQUIREMENTS:
 #   - Edit Config.ps1 with your domain credentials before use
+#   - Place your unique Vision One Endpoint Security Agent installer ZIP in the installer/ directory
 #   - Run configure_target_machine.bat on target machines
 #   - PowerShell execution policy: RemoteSigned or Bypass
 #   - Domain admin privileges for target machines
+#
+# INSTALLER SETUP:
+#   - Each user must download their own personalized Vision One Endpoint Security Agent installer
+#   - The installer comes as a ZIP file from the Trend Micro Vision One portal
+#   - Place the entire ZIP file in the installer/ directory (do not extract)
+#   - Scripts will automatically extract the ZIP on target machines
 #
 # ============================================================================
 
@@ -53,6 +60,75 @@ if ($SkipExistingCheck) {
 
 if ($ForceInstall) {
     $Global:DeploymentConfig.ForceInstallation = $true
+}
+
+function Test-InstallerAvailability {
+    Write-Log "Validating installer availability..."
+    
+    $installerDir = $Global:DeploymentConfig.InstallerDirectory
+    
+    # Check if installer directory exists
+    if (-not (Test-Path $installerDir)) {
+        Write-Log "Installer directory not found: $installerDir" "ERROR"
+        Write-Host ""
+        Write-Host "SETUP REQUIRED:" -ForegroundColor Red
+        Write-Host "1. Create the installer directory: $installerDir" -ForegroundColor Yellow
+        Write-Host "2. Download your unique Vision One Endpoint Security Agent installer ZIP from Trend Micro Vision One portal" -ForegroundColor Yellow
+        Write-Host "3. Place the ZIP file in the installer directory" -ForegroundColor Yellow
+        Write-Host "4. Do NOT extract the ZIP file - scripts handle extraction automatically" -ForegroundColor Yellow
+        return $false
+    }
+    
+    # Check for ZIP files
+    $zipFiles = Get-ChildItem -Path $installerDir -Filter "*.zip" -ErrorAction SilentlyContinue
+    if ($zipFiles.Count -eq 0) {
+        Write-Log "No ZIP files found in installer directory: $installerDir" "ERROR"
+        Write-Host ""
+        Write-Host "INSTALLER MISSING:" -ForegroundColor Red
+        Write-Host "No Vision One Endpoint Security Agent installer ZIP files found in: $installerDir" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "REQUIRED STEPS:" -ForegroundColor Cyan
+        Write-Host "1. Log into your Trend Micro Vision One portal" -ForegroundColor White
+        Write-Host "2. Navigate to Endpoint Security > Agent Management" -ForegroundColor White
+        Write-Host "3. Download your organization's unique installer package" -ForegroundColor White
+        Write-Host "4. Place the downloaded ZIP file in: $installerDir" -ForegroundColor White
+        Write-Host "5. Do NOT extract the ZIP - leave it as a ZIP file" -ForegroundColor White
+        Write-Host ""
+        Write-Host "NOTE: Each organization has a unique installer that cannot be shared." -ForegroundColor Yellow
+        return $false
+    }
+    
+    # Validate ZIP files
+    $validZips = 0
+    foreach ($zipFile in $zipFiles) {
+        try {
+            # Test if ZIP file is readable
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($zipFile.FullName)
+            $zip.Dispose()
+            $validZips++
+            Write-Log "Valid installer found: $($zipFile.Name) ($($zipFile.Length) bytes)" "SUCCESS"
+        } catch {
+            Write-Log "Invalid or corrupted ZIP file: $($zipFile.Name) - $($_.Exception.Message)" "WARNING"
+        }
+    }
+    
+    if ($validZips -eq 0) {
+        Write-Log "No valid ZIP files found in installer directory" "ERROR"
+        Write-Host ""
+        Write-Host "ZIP FILE ISSUES:" -ForegroundColor Red
+        Write-Host "Found ZIP files but they appear to be corrupted or invalid:" -ForegroundColor Yellow
+        $zipFiles | ForEach-Object { Write-Host "  - $($_.Name)" -ForegroundColor Yellow }
+        Write-Host ""
+        Write-Host "SOLUTIONS:" -ForegroundColor Cyan
+        Write-Host "1. Re-download the installer from Trend Micro Vision One portal" -ForegroundColor White
+        Write-Host "2. Ensure the download completed successfully" -ForegroundColor White
+        Write-Host "3. Check that the file is not corrupted (compare file size)" -ForegroundColor White
+        return $false
+    }
+    
+    Write-Log "Installer validation completed successfully - found $validZips valid installer(s)" "SUCCESS"
+    return $true
 }
 
 function Write-Log {
@@ -113,7 +189,7 @@ function Test-WMIConnectivity {
 function Copy-InstallerFiles {
     param([string]$TargetIP)
     
-    Write-Log "Copying installer files to $TargetIP"
+    Write-Log "Copying and extracting installer files to $TargetIP"
     
     try {
         $sourceDir = $Global:DeploymentConfig.InstallerDirectory
@@ -124,23 +200,104 @@ function Copy-InstallerFiles {
             Remove-Item "$targetDir\*" -Recurse -Force -ErrorAction SilentlyContinue
         }
         
-        # Create directory and copy files
+        # Create directory
         New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-        Copy-Item -Path "$sourceDir\*" -Destination $targetDir -Recurse -Force
         
-        # Verify copy
-        $mainExe = "$targetDir\EndpointBasecamp.exe"
-        if (Test-Path $mainExe) {
-            $fileSize = (Get-Item $mainExe).Length
-            $fileCount = (Get-ChildItem $targetDir -Recurse -File).Count
-            Write-Log "Successfully copied $fileCount files to $TargetIP (main exe: $fileSize bytes)" "SUCCESS"
+        # Find installer zip file with smart selection
+        $zipFiles = Get-ChildItem -Path $sourceDir -Filter "*.zip" | Sort-Object LastWriteTime -Descending
+        if ($zipFiles.Count -eq 0) {
+            Write-Log "No zip files found in $sourceDir" "ERROR"
+            return $false
+        } elseif ($zipFiles.Count -gt 1) {
+            Write-Log "Multiple zip files found in $sourceDir:" "WARNING"
+            $zipFiles | ForEach-Object { Write-Log "  - $($_.Name) ($(Get-Date $_.LastWriteTime -Format 'yyyy-MM-dd HH:mm:ss'))" "WARNING" }
+            
+            # Smart selection: prefer files without (1), (2), etc. suffixes
+            $preferredFile = $zipFiles | Where-Object { $_.Name -notmatch '\(\d+\)\.zip$' } | Select-Object -First 1
+            if ($preferredFile) {
+                $zipFile = $preferredFile
+                Write-Log "Selected: $($zipFile.Name) (original filename without duplicate suffix)" "SUCCESS"
+            } else {
+                # If all files have duplicate suffixes, use the most recent one
+                $zipFile = $zipFiles[0]
+                Write-Log "Selected: $($zipFile.Name) (most recent file)" "SUCCESS"
+            }
+        } else {
+            $zipFile = $zipFiles[0]
+        }
+        Write-Log "Found installer zip: $($zipFile.Name) ($($zipFile.Length) bytes)"
+        
+        # Copy zip file to target
+        $targetZipPath = "$targetDir\$($zipFile.Name)"
+        Copy-Item -Path $zipFile.FullName -Destination $targetZipPath -Force
+        Write-Log "Copied zip file to target machine"
+        
+        # Extract zip file on target machine using PowerShell remoting
+        $cred = Get-DeploymentCredentials
+        $extractionResult = Invoke-Command -ComputerName $TargetIP -Credential $cred -ScriptBlock {
+            param($ZipPath, $ExtractPath)
+            
+            try {
+                # Ensure extraction directory exists
+                if (-not (Test-Path $ExtractPath)) {
+                    New-Item -ItemType Directory -Path $ExtractPath -Force | Out-Null
+                }
+                
+                # Extract using .NET System.IO.Compression
+                Add-Type -AssemblyName System.IO.Compression.FileSystem
+                [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $ExtractPath)
+                
+                # Verify extraction
+                $extractedFiles = Get-ChildItem -Path $ExtractPath -Recurse -File
+                Write-Output "Successfully extracted $($extractedFiles.Count) files"
+                
+                # Look for main executable
+                $mainExe = Get-ChildItem -Path $ExtractPath -Name "*.exe" -Recurse | Select-Object -First 1
+                if ($mainExe) {
+                    Write-Output "Main executable found: $mainExe"
+                    return @{
+                        Success = $true
+                        FileCount = $extractedFiles.Count
+                        MainExecutable = $mainExe
+                    }
+                } else {
+                    Write-Output "Warning: No executable found in extracted files"
+                    return @{
+                        Success = $true
+                        FileCount = $extractedFiles.Count
+                        MainExecutable = $null
+                    }
+                }
+                
+            } catch {
+                Write-Error "Extraction failed: $($_.Exception.Message)"
+                return @{
+                    Success = $false
+                    Error = $_.Exception.Message
+                }
+            }
+        } -ArgumentList "C:\temp\VisionOneSEP\$($zipFile.Name)", "C:\temp\VisionOneSEP"
+        
+        if ($extractionResult.Success) {
+            Write-Log "Successfully extracted $($extractionResult.FileCount) files on $TargetIP" "SUCCESS"
+            if ($extractionResult.MainExecutable) {
+                Write-Log "Main executable: $($extractionResult.MainExecutable)" "SUCCESS"
+                
+                # Update the installer command in config to use the found executable
+                $Global:DeploymentConfig.InstallerCommand = "C:\temp\VisionOneSEP\$($extractionResult.MainExecutable) /S /v`"/quiet /norestart`""
+            }
+            
+            # Clean up zip file
+            Remove-Item $targetZipPath -Force -ErrorAction SilentlyContinue
+            
             return $true
         } else {
-            Write-Log "Main executable not found after copy to $TargetIP" "ERROR"
+            Write-Log "Extraction failed on $TargetIP : $($extractionResult.Error)" "ERROR"
             return $false
         }
+        
     } catch {
-        Write-Log "File copy failed to $TargetIP : $($_.Exception.Message)" "ERROR"
+        Write-Log "File copy and extraction failed to $TargetIP : $($_.Exception.Message)" "ERROR"
         return $false
     }
 }
@@ -213,7 +370,7 @@ function Test-ExistingTrendMicro {
         
         # Check for installed Trend Micro software via WMI
         $installedSoftware = Get-WmiObject -Class Win32_Product -ComputerName $TargetIP -Credential $cred | Where-Object {
-            $_.Name -like "*Trend Micro*" -or $_.Name -like "*Apex One*" -or $_.Name -like "*VisionOne*" -or
+            $_.Name -like "*Trend Micro*" -or $_.Name -like "*Apex One*" -or $_.Name -like "*Vision One*" -or
             $_.Name -like "*Endpoint*" -and $_.Name -like "*Trend*"
         }
         
@@ -262,7 +419,7 @@ function Test-ExistingTrendMicro {
 function Test-InstallationSuccess {
     param([string]$TargetIP)
     
-    Write-Log "Checking for VisionOne processes on $TargetIP"
+    Write-Log "Checking for Vision One processes on $TargetIP"
     
     try {
         $cred = Get-DeploymentCredentials
@@ -271,11 +428,11 @@ function Test-InstallationSuccess {
         }
         
         if ($visionProcesses) {
-            Write-Log "VisionOne processes detected on $TargetIP :" "SUCCESS"
+            Write-Log "Vision One processes detected on $TargetIP :" "SUCCESS"
             $visionProcesses | ForEach-Object { Write-Log "  - $($_.Name) (PID: $($_.ProcessId))" }
             return $true
         } else {
-            Write-Log "No VisionOne processes detected on $TargetIP" "WARNING"
+            Write-Log "No Vision One processes detected on $TargetIP" "WARNING"
             return $false
         }
     } catch {
@@ -488,13 +645,24 @@ function Get-TargetHosts {
 }
 
 # Main execution
-Write-Host "=== VisionOne SEP Deployment Tool - PowerShell Edition ===" -ForegroundColor Cyan
+Write-Host "=== Vision One Endpoint Security Agent Deployment Tool - PowerShell Edition ===" -ForegroundColor Cyan
 Write-Host "Configuration loaded from Config.ps1" -ForegroundColor White
 Write-Host ""
+
+# Early validation - check for installer before doing anything else
+if (-not (Test-InstallerAvailability)) {
+    Write-Host ""
+    Write-Host "❌ Deployment cannot proceed without a valid installer." -ForegroundColor Red
+    Write-Host "Please follow the setup instructions above and try again." -ForegroundColor Yellow
+    exit 1
+}
 
 $targetHosts = Get-TargetHosts
 
 if (-not $targetHosts) {
+    Write-Host "IMPORTANT: Place your Vision One Endpoint Security Agent installer ZIP in the installer/ directory first!" -ForegroundColor Red
+    Write-Host "Each user must download their own unique installer from Trend Micro Vision One portal." -ForegroundColor Yellow
+    Write-Host ""
     Write-Host "Usage Examples:" -ForegroundColor Yellow
     Write-Host "  .\Deploy-VisionOne.ps1 -TargetIPs '10.0.5.127'"
     Write-Host "  .\Deploy-VisionOne.ps1 -TargetIPs '10.0.5.127','10.0.5.128','10.0.5.129'"

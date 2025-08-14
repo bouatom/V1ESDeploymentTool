@@ -1,4 +1,4 @@
-# VisionOne SEP Target Hosts
+# Vision One Endpoint Security Agent Target Hosts
 # Add one IP address per line
 # Lines starting with # are ignored
 

@@ -1,6 +1,6 @@
-# Vision One Deployment Tool - PowerShell Edition **STILL WORK IN PROGRESS**
+# Vision One Endpoint Security Agent Deployment Tool - PowerShell Edition
 
-A simple, reliable PowerShell-based deployment tool for Trend Micro Vision One agents across Windows networks. 
+A simple, reliable PowerShell-based deployment tool for Trend Micro Vision One Endpoint Security Agent across Windows networks.
 
 ## 🚀 **Key Features**
 
@@ -25,7 +25,7 @@ A simple, reliable PowerShell-based deployment tool for Trend Micro Vision One a
 - `config.json` - Legacy configuration (not used by PowerShell scripts)
 
 ### **Installer**
-- `installer/` - Directory to place your extracted installer files
+- `installer/` - Directory containing Vision One Endpoint Security Agent installer files
 
 ## 🔧 **Quick Start**
 
@@ -153,7 +153,7 @@ $Global:DeploymentConfig = @{
 3. **Copies Files**: Copies entire installer directory to target
 4. **Starts Installation**: Uses WMI to execute the installer
 5. **Monitors Progress**: Tracks installation process
-6. **Verifies Success**: Checks for VisionOne processes
+6. **Verifies Success**: Checks for Vision One processes
 
 ## 🎯 **Deployment Process**
 
@@ -168,7 +168,7 @@ Target Machine: 10.0.5.127
 │   └── Copy packages\ directory
 ├── Start Installation via WMI
 ├── Monitor Installation Progress
-└── Verify VisionOne Processes
+└── Verify Vision One Processes
 ```
 
 ## 🔍 **Troubleshooting**
@@ -209,7 +209,7 @@ Deployment/
 ├── Deploy-Simple.ps1         # Simple single-host deployment  
 ├── Config.ps1               # Configuration file
 ├── hosts.txt                # Target host list
-├── installer/               # VisionOne SEP installer files
+├── installer/               # Vision One Endpoint Security Agent installer files
 │   ├── EndpointBasecamp.exe
 │   ├── config.json
 │   └── packages/

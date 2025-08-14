@@ -1,4 +1,4 @@
-# VisionOne SEP Deployment - Production Checklist
+# Vision One Endpoint Security Agent Deployment - Production Checklist
 
 ## ✅ **Pre-Deployment Setup**
 
@@ -50,7 +50,7 @@
 ## 🔍 **Post-Deployment Verification**
 
 ### **1. Check Installation Status**
-- [ ] Verify VisionOne processes are running on targets
+- [ ] Verify Vision One processes are running on targets
 - [ ] Check Windows Services for Trend Micro services
 - [ ] Confirm agent communication with management console
 
@@ -74,13 +74,13 @@
 
 ### **Emergency Procedures**
 - **Stop deployment**: Press Ctrl+C to interrupt
-- **Rollback**: Use VisionOne management console to uninstall
+- **Rollback**: Use Vision One management console to uninstall
 - **Clean up**: Remove files from `C:\temp\VisionOneSEP\` on targets
 
 ## 📊 **Success Metrics**
 
 - [ ] **Deployment Success Rate**: >95% for prepared networks
-- [ ] **Installation Verification**: All targets show VisionOne processes
+- [ ] **Installation Verification**: All targets show Vision One processes
 - [ ] **Management Console**: All agents appear and communicate
 - [ ] **No Conflicts**: No errors with existing security software
 
@@ -90,6 +90,13 @@
 - [ ] **Network Security**: Deployment from secure administrative workstation
 - [ ] **Audit Trail**: `deployment.log` preserved for compliance
 - [ ] **Clean Up**: Temporary files removed from target machines
+
+## 📞 **Support Contacts**
+
+- **Technical Issues**: [Your IT Support]
+- **Vision One Support**: [Trend Micro Support]
+- **Network Issues**: [Network Team]
+- **Security Questions**: [Security Team]
 
 ---
 

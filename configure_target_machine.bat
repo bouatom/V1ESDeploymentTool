@@ -1,9 +1,9 @@
 @echo off
 REM ============================================================================
-REM VisionOne SEP Target Machine Configuration Script
+REM Vision One Endpoint Security Agent Target Machine Configuration Script
 REM ============================================================================
 REM
-REM PURPOSE: Configure target machines to accept remote VisionOne SEP deployment
+REM PURPOSE: Configure target machines to accept remote Vision One Endpoint Security Agent deployment
 REM ACTIONS: 
 REM   - Enables WinRM service and configures authentication
 REM   - Starts WMI service and sets to automatic startup
@@ -17,7 +17,7 @@ REM REQUIREMENTS: Must be run as Administrator on the TARGET machine
 REM
 REM ============================================================================
 
-echo Configuring target machine for VisionOne SEP deployment...
+echo Configuring target machine for Vision One Endpoint Security Agent deployment...
 echo.
 
 echo === Enabling WinRM ===

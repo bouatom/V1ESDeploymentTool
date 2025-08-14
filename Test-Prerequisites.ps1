@@ -1,17 +1,17 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Tests system prerequisites for VisionOne SEP Deployment Tool
+    Tests system prerequisites for Vision One Endpoint Security Agent Deployment Tool
 
 .DESCRIPTION
     This script validates that the system meets all requirements for running
-    the VisionOne SEP Deployment Tool without making any changes.
+    the Vision One Endpoint Security Agent Deployment Tool without making any changes.
 
 .EXAMPLE
     .\Test-Prerequisites.ps1
 
 .NOTES
-    Author: VisionOne SEP Deployment Tool
+    Author: Vision One Endpoint Security Agent Deployment Tool
     Version: 1.0
     This script can be run without administrator privileges
 #>
@@ -28,7 +28,7 @@ function Write-Fail { param($Message) Write-Host "❌ $Message" -ForegroundColor
 function Test-AllPrerequisites {
     Write-Host @"
 ╔══════════════════════════════════════════════════════════════╗
-║            VisionOne SEP Deployment Tool                     ║
+║       Vision One Endpoint Security Agent Deployment Tool    ║
 ║              Prerequisites Checker                           ║
 ╚══════════════════════════════════════════════════════════════╝
 
@@ -189,7 +189,7 @@ function Test-AllPrerequisites {
     Write-Host "`n" + "="*70 -ForegroundColor Cyan
     if ($allPassed) {
         Write-Success "✅ All critical prerequisites met!"
-        Write-Info "System is ready for VisionOne SEP Deployment Tool installation"
+        Write-Info "System is ready for Vision One Endpoint Security Agent Deployment Tool installation"
         Write-Host "`nTo install, run: .\Install-VisionOneSEPTool.ps1" -ForegroundColor Yellow
     }
     else {
