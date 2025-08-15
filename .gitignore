@@ -1,0 +1,57 @@
+# Logs
+*.log
+deployment.log
+error.log
+debug.log
+
+# Temporary files
+*.tmp
+*.temp
+~$*
+
+# Credentials and sensitive data
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.txt
+secrets.txt
+passwords.txt
+
+# PowerShell specific
+*.ps1xml
+$RECYCLE.BIN/
+
+# Windows specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*.lnk
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Configuration overrides (keep templates, ignore actual configs)
+config.local.*
+*.local.ps1
+local_*
+
+# Output directories
+output/
+results/
+reports/
+
+# Package files
+*.zip
+*.7z
+*.rar
+*.tar.gz
