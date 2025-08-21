@@ -158,7 +158,7 @@
 ### If Scheduled Tasks Are Left Behind
 ```bash
 # List all Vision One Endpoint Security Agent installation tasks
-schtasks /query /s TARGET_HOST /fo csv | findstr "VisionOneSEPInstall"
+schtasks /query /s TARGET_HOST /fo csv | findstr "V1ESInstall"
 
 # Remove orphaned tasks
 schtasks /delete /s TARGET_HOST /tn "TASK_NAME" /f

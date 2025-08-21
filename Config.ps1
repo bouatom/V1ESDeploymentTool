@@ -1,15 +1,12 @@
 # Vision One Endpoint Security Agent Deployment Configuration
 # Edit these settings for your environment
 
-# Credentials - EDIT THESE FOR YOUR ENVIRONMENT
+# Deployment Configuration - No user configuration required
 $Global:DeploymentConfig = @{
-    Username = "DOMAIN\username"        # Change to your domain\username
-    Password = "your_password_here"     # Change to your password
-    Domain = "your.domain.com"          # Change to your domain
     
     # Paths
     InstallerDirectory = ".\installer"
-    RemoteTempPath = "C$\temp\VisionOneSEP"
+    RemoteTempPath = "C$\temp\Trend Micro\V1ES"
     
     # Installation Settings
     InstallationTimeout = 600  # 10 minutes
@@ -27,13 +24,9 @@ $Global:DeploymentConfig = @{
     ScanOnlyWindowsHosts = $false      # Set to $true to filter for Windows hosts only (slower)
     
     # Installer Command
-    InstallerCommand = "C:\temp\VisionOneSEP\EndpointBasecamp.exe /S /v`"/quiet /norestart`""
+    InstallerCommand = "C:\temp\Trend Micro\V1ES\EndpointBasecamp.exe /S /v`"/quiet /norestart`""
 }
 
-# Function to get credentials
-function Get-DeploymentCredentials {
-    $pass = ConvertTo-SecureString $Global:DeploymentConfig.Password -AsPlainText -Force
-    return New-Object System.Management.Automation.PSCredential($Global:DeploymentConfig.Username, $pass)
-}
+# No credential functions needed - credentials are prompted directly in the main script
 
 Write-Host "Configuration loaded for Vision One Endpoint Security Agent Deployment" -ForegroundColor Green

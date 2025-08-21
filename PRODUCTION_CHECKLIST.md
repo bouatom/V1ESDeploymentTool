@@ -2,10 +2,11 @@
 
 ## ✅ **Pre-Deployment Setup**
 
-### **1. Configure Credentials**
-- [ ] Edit `Config.ps1` with your domain credentials
+### **1. Prepare Credentials**
+- [ ] Ensure you have an account with administrator permissions on target machines
+- [ ] Know your domain name (e.g., CONTOSO, your.domain.com)
 - [ ] Test credentials manually: `Get-WmiObject -Class Win32_ComputerSystem -ComputerName <target> -Credential $cred`
-- [ ] Secure the `Config.ps1` file (restrict file permissions)
+- [ ] **No configuration files to edit** - credentials are prompted at runtime
 
 ### **2. Prepare Target Machines**
 - [ ] Copy `configure_target_machine.bat` to target machines
@@ -13,8 +14,8 @@
 - [ ] Verify with `check_wmi_services.bat`
 
 ### **3. Verify Installer**
-- [ ] Ensure `installer/EndpointBasecamp.exe` exists
-- [ ] Verify installer integrity and version
+- [ ] Place your unique Vision One Endpoint Security Agent installer ZIP in `installer/` directory
+- [ ] Verify installer ZIP file integrity and version
 - [ ] Test manual installation on one machine first
 
 ### **4. Network Preparation**
@@ -60,7 +61,7 @@
 - [ ] Verify no conflicts with existing security software
 
 ### **3. Clean Up**
-- [ ] Remove installer files from target machines (`C:\temp\VisionOneSEP\`)
+- [ ] Remove installer files from target machines (`C:\temp\Trend Micro\V1ES\`)
 - [ ] Archive deployment logs
 - [ ] Document any issues or special configurations
 
@@ -75,7 +76,7 @@
 ### **Emergency Procedures**
 - **Stop deployment**: Press Ctrl+C to interrupt
 - **Rollback**: Use Vision One management console to uninstall
-- **Clean up**: Remove files from `C:\temp\VisionOneSEP\` on targets
+- **Clean up**: Remove files from `C:\temp\Trend Micro\V1ES\` on targets
 
 ## 📊 **Success Metrics**
 
@@ -86,7 +87,7 @@
 
 ## 🔒 **Security Considerations**
 
-- [ ] **Credential Security**: `Config.ps1` has restricted permissions
+- [ ] **Credential Security**: No credentials stored in files - prompted at runtime
 - [ ] **Network Security**: Deployment from secure administrative workstation
 - [ ] **Audit Trail**: `deployment.log` preserved for compliance
 - [ ] **Clean Up**: Temporary files removed from target machines

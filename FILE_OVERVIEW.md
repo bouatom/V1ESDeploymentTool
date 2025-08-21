@@ -34,15 +34,14 @@
 
 ## ⚙️ **Configuration Files**
 
-### **`Config.ps1`** - Master Configuration
-**Purpose**: Central configuration file for all deployment settings
+### **`Config.ps1`** - Internal Configuration
+**Purpose**: Internal configuration file for deployment settings (no user editing required)
 **Contains**:
-- **Credentials**: Domain username, password, domain (MUST BE EDITED)
-- **Paths**: Installer directory, remote temp paths
+- **Paths**: Installer directory, remote temp paths (`C$\temp\Trend Micro\V1ES`)
 - **Timeouts**: Installation, monitoring, network scan timeouts
 - **Security Settings**: Existing product checks, force installation flags
 - **Network Options**: Concurrent operations, Windows-only filtering
-**Critical**: Edit credentials before first use
+**Note**: No credentials stored - all authentication is prompted at runtime
 
 ### **`hosts.txt`** - Target Host List
 **Purpose**: Predefined list of target IP addresses for batch deployment
@@ -189,10 +188,10 @@
 
 ## 🎯 **Quick Reference**
 
-### **Essential Files to Edit Before Use**
-1. **`Config.ps1`** - Add your domain credentials
-2. **`hosts.txt`** - Add your target IP addresses (optional)
-3. **`installer/`** - Place your unique Vision One Endpoint Security Agent installer ZIP file
+### **Essential Setup Before Use**
+1. **`installer/`** - Place your unique Vision One Endpoint Security Agent installer ZIP file
+2. **`hosts.txt`** - Add your target IP addresses (optional for batch deployment)
+3. **No configuration editing required** - credentials and domain are prompted at runtime
 
 ### **Files to Copy to Target Machines**
 1. **`configure_target_machine.bat`** - Run as Administrator

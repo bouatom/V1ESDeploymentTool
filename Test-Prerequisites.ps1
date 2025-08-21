@@ -190,7 +190,7 @@ function Test-AllPrerequisites {
     if ($allPassed) {
         Write-Success "✅ All critical prerequisites met!"
         Write-Info "System is ready for Vision One Endpoint Security Agent Deployment Tool installation"
-        Write-Host "`nTo install, run: .\Install-VisionOneSEPTool.ps1" -ForegroundColor Yellow
+        Write-Host "`nTo deploy, run: .\Deploy-VisionOne.ps1 -TargetIPs '<target-ip>'" -ForegroundColor Yellow
     }
     else {
         Write-Fail "❌ Some critical prerequisites are not met"

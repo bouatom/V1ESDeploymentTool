@@ -19,7 +19,7 @@
 #   .\Deploy-VisionOne.ps1 -CIDR '10.0.5.0/24' -TestOnly
 #
 # REQUIREMENTS:
-#   - Edit Config.ps1 with your domain credentials before use
+#   - Script will prompt for domain credentials securely (no plaintext storage)
 #   - Place your unique Vision One Endpoint Security Agent installer ZIP in the installer/ directory
 #   - Run configure_target_machine.bat on target machines
 #   - PowerShell execution policy: RemoteSigned or Bypass
@@ -52,6 +52,51 @@ param(
 
 # Load configuration
 . .\Config.ps1
+
+# Initialize credentials with secure prompting
+Write-Host "=== Vision One Endpoint Security Agent Deployment ===" -ForegroundColor Cyan
+Write-Host ""
+
+# Prompt for credentials directly (no caching/storage)
+$Global:DeploymentCredential = $null
+try {
+    Write-Host "Please enter credentials for an account with administrator permissions on target machines" -ForegroundColor Yellow
+    Write-Host "Format: DOMAIN\username (e.g., CONTOSO\admin)" -ForegroundColor Gray
+    Write-Host ""
+    
+    $Global:DeploymentCredential = Get-Credential -Message "Enter deployment credentials (DOMAIN\username)"
+    
+    if (-not $Global:DeploymentCredential) {
+        Write-Host "Deployment cancelled - credentials are required" -ForegroundColor Red
+        exit 1
+    }
+    
+    # Validate credential format and prompt for domain if needed
+    if ($Global:DeploymentCredential.UserName -notmatch "\\") {
+        Write-Warning "Username should be in DOMAIN\username format"
+        Write-Host ""
+        
+        # Prompt for domain
+        $domainName = ""
+        while ([string]::IsNullOrWhiteSpace($domainName)) {
+            $domainName = Read-Host "Enter domain name (e.g., CONTOSO, your.domain.com)"
+            if ([string]::IsNullOrWhiteSpace($domainName)) {
+                Write-Host "Domain name is required" -ForegroundColor Red
+            }
+        }
+        
+        # Create new credential with proper domain format
+        $newUsername = "$domainName\$($Global:DeploymentCredential.UserName)"
+        $Global:DeploymentCredential = New-Object System.Management.Automation.PSCredential($newUsername, $Global:DeploymentCredential.Password)
+    }
+    
+    Write-Host "✓ Credentials loaded for user: $($Global:DeploymentCredential.UserName)" -ForegroundColor Green
+    Write-Host ""
+}
+catch {
+    Write-Host "Failed to get credentials: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
 
 # Override config with command-line parameters
 if ($SkipExistingCheck) {
@@ -176,8 +221,7 @@ function Test-WMIConnectivity {
     Write-Log "Testing WMI connectivity to $TargetIP"
     
     try {
-        $cred = Get-DeploymentCredentials
-        $computer = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $TargetIP -Credential $cred -ErrorAction Stop
+        $computer = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
         Write-Log "WMI connection successful to $($computer.Name)" "SUCCESS"
         return $true
     } catch {
@@ -209,7 +253,7 @@ function Copy-InstallerFiles {
             Write-Log "No zip files found in $sourceDir" "ERROR"
             return $false
         } elseif ($zipFiles.Count -gt 1) {
-            Write-Log "Multiple zip files found in $sourceDir:" "WARNING"
+            Write-Log "Multiple zip files found in ${sourceDir}:" "WARNING"
             $zipFiles | ForEach-Object { Write-Log "  - $($_.Name) ($(Get-Date $_.LastWriteTime -Format 'yyyy-MM-dd HH:mm:ss'))" "WARNING" }
             
             # Smart selection: prefer files without (1), (2), etc. suffixes
@@ -233,8 +277,7 @@ function Copy-InstallerFiles {
         Write-Log "Copied zip file to target machine"
         
         # Extract zip file on target machine using PowerShell remoting
-        $cred = Get-DeploymentCredentials
-        $extractionResult = Invoke-Command -ComputerName $TargetIP -Credential $cred -ScriptBlock {
+        $extractionResult = Invoke-Command -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ScriptBlock {
             param($ZipPath, $ExtractPath)
             
             try {
@@ -276,7 +319,7 @@ function Copy-InstallerFiles {
                     Error = $_.Exception.Message
                 }
             }
-        } -ArgumentList "C:\temp\VisionOneSEP\$($zipFile.Name)", "C:\temp\VisionOneSEP"
+        } -ArgumentList "C:\temp\Trend Micro\V1ES\$($zipFile.Name)", "C:\temp\Trend Micro\V1ES"
         
         if ($extractionResult.Success) {
             Write-Log "Successfully extracted $($extractionResult.FileCount) files on $TargetIP" "SUCCESS"
@@ -284,7 +327,7 @@ function Copy-InstallerFiles {
                 Write-Log "Main executable: $($extractionResult.MainExecutable)" "SUCCESS"
                 
                 # Update the installer command in config to use the found executable
-                $Global:DeploymentConfig.InstallerCommand = "C:\temp\VisionOneSEP\$($extractionResult.MainExecutable) /S /v`"/quiet /norestart`""
+                $Global:DeploymentConfig.InstallerCommand = "C:\temp\Trend Micro\V1ES\$($extractionResult.MainExecutable) /S /v`"/quiet /norestart`""
             }
             
             # Clean up zip file
@@ -308,10 +351,9 @@ function Start-Installation {
     Write-Log "Starting installation on $TargetIP"
     
     try {
-        $cred = Get-DeploymentCredentials
         $installCommand = $Global:DeploymentConfig.InstallerCommand
         
-        $result = Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList $installCommand -ComputerName $TargetIP -Credential $cred
+        $result = Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList $installCommand -ComputerName $TargetIP -Credential $Global:DeploymentCredential
         
         if ($result.ReturnValue -eq 0) {
             Write-Log "Installation started successfully on $TargetIP (ProcessId: $($result.ProcessId))" "SUCCESS"
@@ -331,7 +373,6 @@ function Monitor-Installation {
     
     Write-Log "Monitoring installation on $TargetIP (ProcessId: $ProcessId)"
     
-    $cred = Get-DeploymentCredentials
     $maxCycles = $Global:DeploymentConfig.MaxMonitoringCycles
     $interval = $Global:DeploymentConfig.MonitoringInterval
     
@@ -339,7 +380,7 @@ function Monitor-Installation {
         Start-Sleep -Seconds $interval
         
         try {
-            $processes = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $cred | Where-Object { $_.Name -eq "EndpointBasecamp.exe" }
+            $processes = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object { $_.Name -eq "EndpointBasecamp.exe" }
             
             if ($processes) {
                 Write-Log "[$i/$maxCycles] Installation still running on $TargetIP"
@@ -359,17 +400,15 @@ function Test-ExistingTrendMicro {
     Write-Log "Checking for existing Trend Micro products on $TargetIP"
     
     try {
-        $cred = Get-DeploymentCredentials
-        
         # Check for Trend Micro processes
-        $trendProcesses = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $cred | Where-Object { 
+        $trendProcesses = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object { 
             $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*" -or 
             $_.Name -like "*Endpoint*" -or $_.Name -like "*TMCCSF*" -or $_.Name -like "*ntrtscan*" -or
             $_.Name -like "*TmListen*" -or $_.Name -like "*TmProxy*"
         }
         
         # Check for installed Trend Micro software via WMI
-        $installedSoftware = Get-WmiObject -Class Win32_Product -ComputerName $TargetIP -Credential $cred | Where-Object {
+        $installedSoftware = Get-WmiObject -Class Win32_Product -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object {
             $_.Name -like "*Trend Micro*" -or $_.Name -like "*Apex One*" -or $_.Name -like "*Vision One*" -or
             $_.Name -like "*Endpoint*" -and $_.Name -like "*Trend*"
         }
@@ -422,8 +461,7 @@ function Test-InstallationSuccess {
     Write-Log "Checking for Vision One processes on $TargetIP"
     
     try {
-        $cred = Get-DeploymentCredentials
-        $visionProcesses = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $cred | Where-Object { 
+        $visionProcesses = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object { 
             $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*" -or $_.Name -like "*Endpoint*"
         }
         

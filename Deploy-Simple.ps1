@@ -23,8 +23,6 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$TargetIP,
     
-    [string]$Username = "DOMAIN\username",      # Edit with your credentials
-    [string]$Password = "your_password_here",   # Edit with your credentials
     [string]$SourceDir = ".\installer"
 )
 
@@ -109,14 +107,43 @@ if (-not (Test-InstallerAvailability $SourceDir)) {
     Write-Host "Please follow the setup instructions above and try again." -ForegroundColor Yellow
     exit 1
 }
+# Prompt for credentials
+Write-Host "Please enter credentials for an account with administrator permissions on target machines" -ForegroundColor Yellow
+Write-Host "Format: DOMAIN\username (e.g., CONTOSO\admin)" -ForegroundColor Gray
+Write-Host ""
+
+$cred = Get-Credential -Message "Enter deployment credentials (DOMAIN\username)"
+
+if (-not $cred) {
+    Write-Host "Deployment cancelled - credentials are required" -ForegroundColor Red
+    exit 1
+}
+
+# Validate credential format and prompt for domain if needed
+if ($cred.UserName -notmatch "\\") {
+    Write-Warning "Username should be in DOMAIN\username format"
+    Write-Host ""
+    
+    # Prompt for domain
+    $domainName = ""
+    while ([string]::IsNullOrWhiteSpace($domainName)) {
+        $domainName = Read-Host "Enter domain name (e.g., CONTOSO, your.domain.com)"
+        if ([string]::IsNullOrWhiteSpace($domainName)) {
+            Write-Host "Domain name is required" -ForegroundColor Red
+        }
+    }
+    
+    # Create new credential with proper domain format
+    $newUsername = "$domainName\$($cred.UserName)"
+    $cred = New-Object System.Management.Automation.PSCredential($newUsername, $cred.Password)
+}
+
+Write-Host "✓ Credentials loaded for user: $($cred.UserName)" -ForegroundColor Green
 Write-Host ""
 
 try {
     # Step 0: Check for existing Trend Micro products
     Write-Host "Step 0: Checking for existing Trend Micro products..." -ForegroundColor Yellow
-    
-    $pass = ConvertTo-SecureString $Password -AsPlainText -Force
-    $cred = New-Object System.Management.Automation.PSCredential($Username, $pass)
     
     # Check for existing Trend Micro software
     $existingSoftware = Get-WmiObject -Class Win32_Product -ComputerName $TargetIP -Credential $cred -ErrorAction SilentlyContinue | Where-Object {
@@ -145,12 +172,12 @@ try {
     Write-Host "Step 1: Copying installer files..." -ForegroundColor Yellow
     
     # Clean up any existing files
-    if (Test-Path "\\$TargetIP\C$\temp\VisionOneSEP") {
-        Remove-Item "\\$TargetIP\C$\temp\VisionOneSEP\*" -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path "\\$TargetIP\C$\temp\Trend Micro\V1ES") {
+        Remove-Item "\\$TargetIP\C$\temp\Trend Micro\V1ES\*" -Recurse -Force -ErrorAction SilentlyContinue
     }
     
     # Create directory
-    New-Item -ItemType Directory -Path "\\$TargetIP\C$\temp\VisionOneSEP" -Force | Out-Null
+    New-Item -ItemType Directory -Path "\\$TargetIP\C$\temp\Trend Micro\V1ES" -Force | Out-Null
     
     # Find and copy installer zip file with smart selection
     $zipFiles = Get-ChildItem -Path $SourceDir -Filter "*.zip" | Sort-Object LastWriteTime -Descending
@@ -179,15 +206,13 @@ try {
     Write-Host "Found installer zip: $($zipFile.Name) ($($zipFile.Length) bytes)" -ForegroundColor White
     
     # Copy zip file to target
-    Copy-Item -Path $zipFile.FullName -Destination "\\$TargetIP\C$\temp\VisionOneSEP\$($zipFile.Name)" -Force
+    Copy-Item -Path $zipFile.FullName -Destination "\\$TargetIP\C$\temp\Trend Micro\V1ES\$($zipFile.Name)" -Force
     Write-Host "Copied zip file to target machine" -ForegroundColor Green
     
     # Extract zip file on target machine
     Write-Host "Extracting installer files on target machine..." -ForegroundColor Yellow
     
-    # Create credentials for remote execution
-    $pass = ConvertTo-SecureString $Password -AsPlainText -Force
-    $cred = New-Object System.Management.Automation.PSCredential($Username, $pass)
+    # Use credentials from earlier prompt
     
     $extractionResult = Invoke-Command -ComputerName $TargetIP -Credential $cred -ScriptBlock {
         param($ZipPath, $ExtractPath)
@@ -214,21 +239,21 @@ try {
                 Error = $_.Exception.Message
             }
         }
-    } -ArgumentList "C:\temp\VisionOneSEP\$($zipFile.Name)", "C:\temp\VisionOneSEP"
+    } -ArgumentList "C:\temp\Trend Micro\V1ES\$($zipFile.Name)", "C:\temp\Trend Micro\V1ES"
     
     if ($extractionResult.Success) {
         Write-Host "✅ Extracted $($extractionResult.FileCount) files" -ForegroundColor Green
         
         # Update installer command to use found executable
         if ($extractionResult.MainExecutable) {
-            $installCommand = "C:\temp\VisionOneSEP\$($extractionResult.MainExecutable) /S /v`"/quiet /norestart`""
+            $installCommand = "C:\temp\Trend Micro\V1ES\$($extractionResult.MainExecutable) /S /v`"/quiet /norestart`""
             Write-Host "Main executable: $($extractionResult.MainExecutable)" -ForegroundColor Green
         } else {
             throw "No executable found in extracted files"
         }
         
         # Clean up zip file
-        Remove-Item "\\$TargetIP\C$\temp\VisionOneSEP\$($zipFile.Name)" -Force -ErrorAction SilentlyContinue
+        Remove-Item "\\$TargetIP\C$\temp\Trend Micro\V1ES\$($zipFile.Name)" -Force -ErrorAction SilentlyContinue
     } else {
         throw "Extraction failed: $($extractionResult.Error)"
     }
