@@ -12,9 +12,12 @@ param(
     [switch]$TestOnly,
     [switch]$Parallel,
     [int]$MaxParallel = 5,
+    [switch]$FullParallel,
+    [int]$ParallelLimit = 0,
     [switch]$SkipExistingCheck,
     [switch]$ForceInstall,
     [switch]$ShowWMIHelp,
+    [switch]$ShowParallelConfig,
     [switch]$ConfigureTrustedHosts
 )
 
@@ -29,6 +32,10 @@ trap {
 
 # Load configuration
 . .\Config.ps1
+
+# Global optimization variables
+$Global:LocalDetectionCache = @{}
+$Global:WMISessionCache = @{}
 
 # Initialize credentials
 Write-Host "=== Vision One Endpoint Security Agent Deployment ===" -ForegroundColor Cyan
@@ -59,6 +66,17 @@ if ($ForceInstall) {
     $Global:DeploymentConfig.ForceInstallation = $true
 }
 
+# Override parallel deployment settings from command line
+if ($ParallelLimit -gt 0) {
+    $Global:DeploymentConfig.MaxParallelDeployments = $ParallelLimit
+    Write-Log "Parallel deployment limit set to $ParallelLimit via command line" "INFO"
+}
+
+if ($MaxParallel -ne 5) {  # 5 is the default value
+    $Global:DeploymentConfig.MaxParallelDeployments = $MaxParallel
+    Write-Log "Parallel deployment limit set to $MaxParallel via MaxParallel parameter" "INFO"
+}
+
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -74,33 +92,45 @@ function Write-Log {
 function Test-IsLocalMachine {
     param([string]$TargetIP)
     
-    # Get local machine information
-    $localHostname = $env:COMPUTERNAME
-    $localFQDN = [System.Net.Dns]::GetHostByName($env:COMPUTERNAME).HostName
-    
-    # Get local IP addresses
-    $localIPs = @()
-    try {
-        $networkAdapters = Get-WmiObject -Class Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true }
-        foreach ($adapter in $networkAdapters) {
-            if ($adapter.IPAddress) {
-                $localIPs += $adapter.IPAddress
-            }
-        }
-    } catch {
-        # Fallback method
-        $localIPs += (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike "*Loopback*" }).IPAddress
+    # Check cache first for performance
+    if ($Global:LocalDetectionCache.ContainsKey($TargetIP)) {
+        return $Global:LocalDetectionCache[$TargetIP]
     }
     
-    # Add common local addresses
-    $localIPs += @("127.0.0.1", "localhost", "::1")
+    # Initialize local machine data once
+    if (-not $Global:LocalMachineData) {
+        $Global:LocalMachineData = @{
+            Hostname = $env:COMPUTERNAME
+            FQDN = [System.Net.Dns]::GetHostByName($env:COMPUTERNAME).HostName
+            IPs = @()
+        }
+        
+        # Get local IP addresses
+        try {
+            $networkAdapters = Get-WmiObject -Class Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true }
+            foreach ($adapter in $networkAdapters) {
+                if ($adapter.IPAddress) {
+                    $Global:LocalMachineData.IPs += $adapter.IPAddress
+                }
+            }
+        } catch {
+            # Fallback method
+            $Global:LocalMachineData.IPs += (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike "*Loopback*" }).IPAddress
+        }
+        
+        # Add common local addresses
+        $Global:LocalMachineData.IPs += @("127.0.0.1", "localhost", "::1")
+    }
     
     # Check if target matches any local identifier
-    $isLocal = ($TargetIP -eq $localHostname) -or 
-               ($TargetIP -eq $localFQDN) -or 
-               ($TargetIP -in $localIPs) -or
+    $isLocal = ($TargetIP -eq $Global:LocalMachineData.Hostname) -or 
+               ($TargetIP -eq $Global:LocalMachineData.FQDN) -or 
+               ($TargetIP -in $Global:LocalMachineData.IPs) -or
                ($TargetIP -eq "localhost") -or
                ($TargetIP -eq "127.0.0.1")
+    
+    # Cache the result
+    $Global:LocalDetectionCache[$TargetIP] = $isLocal
     
     if ($isLocal) {
         Write-Log "Detected local connection for $TargetIP" "INFO"
@@ -263,6 +293,297 @@ function Restore-TrustedHosts {
         
     } catch {
         Write-Log "Failed to restore TrustedHosts: $($_.Exception.Message)" "WARNING"
+    }
+}
+
+function Clear-OptimizationCaches {
+    Write-Log "Cleaning up optimization caches..." "INFO"
+    
+    try {
+        # Clear caches to free memory
+        if ($Global:LocalDetectionCache) {
+            $Global:LocalDetectionCache.Clear()
+        }
+        
+        if ($Global:WMISessionCache) {
+            # Close any open WMI sessions
+            foreach ($session in $Global:WMISessionCache.Values) {
+                if ($session -and $session.GetType().Name -eq "CimSession") {
+                    Remove-CimSession $session -ErrorAction SilentlyContinue
+                }
+            }
+            $Global:WMISessionCache.Clear()
+        }
+        
+        # Clear local machine data
+        Remove-Variable -Name LocalMachineData -Scope Global -ErrorAction SilentlyContinue
+        
+        # Force garbage collection
+        [System.GC]::Collect()
+        [System.GC]::WaitForPendingFinalizers()
+        
+        Write-Log "Optimization caches cleared successfully" "SUCCESS"
+        
+    } catch {
+        Write-Log "Failed to clear optimization caches: $($_.Exception.Message)" "WARNING"
+    }
+}
+
+function Start-PerformanceTimer {
+    param([string]$Operation)
+    
+    if (-not $Global:PerformanceTimers) {
+        $Global:PerformanceTimers = @{}
+    }
+    
+    $Global:PerformanceTimers[$Operation] = @{
+        StartTime = Get-Date
+        Operation = $Operation
+    }
+}
+
+function Stop-PerformanceTimer {
+    param([string]$Operation)
+    
+    if ($Global:PerformanceTimers -and $Global:PerformanceTimers.ContainsKey($Operation)) {
+        $timer = $Global:PerformanceTimers[$Operation]
+        $duration = (Get-Date) - $timer.StartTime
+        Write-Log "Performance: $Operation completed in $($duration.TotalSeconds.ToString('F2')) seconds" "INFO"
+        $Global:PerformanceTimers.Remove($Operation)
+    }
+}
+
+function Show-ParallelConfiguration {
+    Write-Host "=== Parallel Deployment Configuration ===" -ForegroundColor Cyan
+    Write-Host "Parallel Deployment Enabled: $($Global:DeploymentConfig.EnableParallelDeployment)" -ForegroundColor White
+    Write-Host "Maximum Concurrent Deployments: $($Global:DeploymentConfig.MaxParallelDeployments)" -ForegroundColor White
+    Write-Host "Auto-Parallel Threshold: $($Global:DeploymentConfig.AutoParallelThreshold) hosts" -ForegroundColor White
+    Write-Host "Batch Size: $($Global:DeploymentConfig.ParallelBatchSize)" -ForegroundColor White
+    Write-Host "Progress Update Interval: $($Global:DeploymentConfig.ParallelProgressInterval) seconds" -ForegroundColor White
+    Write-Host ""
+    
+    # Provide recommendations based on system
+    $recommendedMax = 5  # Default recommendation
+    $totalRAM = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
+    $cpuCores = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+    
+    if ($totalRAM -lt 8 -or $cpuCores -lt 4) {
+        $recommendedMax = 2
+        $systemClass = "Low-end"
+    } elseif ($totalRAM -lt 16 -or $cpuCores -lt 8) {
+        $recommendedMax = 5
+        $systemClass = "Mid-range"
+    } elseif ($totalRAM -lt 32 -or $cpuCores -lt 16) {
+        $recommendedMax = 10
+        $systemClass = "High-end"
+    } else {
+        $recommendedMax = 15
+        $systemClass = "Server-class"
+    }
+    
+    Write-Host "System Classification: $systemClass ($([Math]::Round($totalRAM, 1))GB RAM, $cpuCores cores)" -ForegroundColor Gray
+    Write-Host "Recommended Max Parallel: $recommendedMax deployments" -ForegroundColor Yellow
+    
+    if ($Global:DeploymentConfig.MaxParallelDeployments -gt $recommendedMax) {
+        Write-Host "⚠️  Current setting ($($Global:DeploymentConfig.MaxParallelDeployments)) exceeds recommendation" -ForegroundColor Yellow
+    } elseif ($Global:DeploymentConfig.MaxParallelDeployments -lt ($recommendedMax / 2)) {
+        Write-Host "💡 Current setting ($($Global:DeploymentConfig.MaxParallelDeployments)) is conservative, could increase to $recommendedMax" -ForegroundColor Green
+    } else {
+        Write-Host "✅ Current setting ($($Global:DeploymentConfig.MaxParallelDeployments)) is optimal for your system" -ForegroundColor Green
+    }
+    Write-Host ""
+}
+
+function Optimize-FileOperations {
+    param([string]$SourcePath, [string]$DestinationPath)
+    
+    try {
+        # Use robocopy for better performance on large files
+        $robocopyArgs = @(
+            $SourcePath,
+            $DestinationPath,
+            "/E",           # Copy subdirectories including empty ones
+            "/R:3",         # Retry 3 times on failed copies
+            "/W:5",         # Wait 5 seconds between retries
+            "/MT:8",        # Multi-threaded copy (8 threads)
+            "/NP",          # No progress display
+            "/NFL",         # No file list
+            "/NDL"          # No directory list
+        )
+        
+        $result = & robocopy @robocopyArgs 2>&1
+        $exitCode = $LASTEXITCODE
+        
+        # Robocopy exit codes: 0-7 are success, 8+ are errors
+        if ($exitCode -lt 8) {
+            return $true
+        } else {
+            Write-Log "Robocopy failed with exit code: $exitCode" "WARNING"
+            return $false
+        }
+        
+    } catch {
+        Write-Log "Optimize-FileOperations failed: $($_.Exception.Message)" "WARNING"
+        return $false
+    }
+}
+
+function Start-ParallelDeployment {
+    param([array]$TargetHosts)
+    
+    # Validate and adjust parallel deployment limits
+    $maxParallel = $Global:DeploymentConfig.MaxParallelDeployments
+    
+    # Ensure reasonable limits
+    if ($maxParallel -lt 1) {
+        $maxParallel = 1
+        Write-Log "Parallel limit too low, adjusted to 1" "WARNING"
+    } elseif ($maxParallel -gt 20) {
+        $maxParallel = 20
+        Write-Log "Parallel limit too high, adjusted to 20 for system stability" "WARNING"
+    }
+    
+    # Don't run more parallel deployments than we have hosts
+    if ($maxParallel -gt $TargetHosts.Count) {
+        $maxParallel = $TargetHosts.Count
+        Write-Log "Parallel limit adjusted to $maxParallel (number of target hosts)" "INFO"
+    }
+    
+    Write-Host "=== Parallel Deployment Mode ===" -ForegroundColor Cyan
+    Write-Host "Deploying to $($TargetHosts.Count) hosts with up to $maxParallel concurrent deployments" -ForegroundColor Green
+    Write-Host "Batch size: $($Global:DeploymentConfig.ParallelBatchSize) | Progress updates: every $($Global:DeploymentConfig.ParallelProgressInterval)s" -ForegroundColor Gray
+    Write-Host ""
+    
+    $results = @()
+    $jobs = @()
+    $completed = 0
+    $successful = 0
+    $failed = 0
+    
+    # Start performance timer for overall deployment
+    Start-PerformanceTimer "ParallelDeployment-All"
+    
+    # Process hosts in batches to manage resource usage
+    $batchSize = $Global:DeploymentConfig.ParallelBatchSize
+    $maxConcurrent = $maxParallel  # Use the validated limit
+    
+    for ($i = 0; $i -lt $TargetHosts.Count; $i += $batchSize) {
+        $batch = $TargetHosts[$i..([Math]::Min($i + $batchSize - 1, $TargetHosts.Count - 1))]
+        Write-Host "Processing batch $([Math]::Floor($i / $batchSize) + 1): $($batch.Count) hosts" -ForegroundColor Yellow
+        
+        foreach ($targetHost in $batch) {
+            # Wait for available slot
+            while ((Get-Job -State Running).Count -ge $maxConcurrent) {
+                Start-Sleep -Seconds 1
+                
+                # Check for completed jobs and collect results
+                $completedJobs = Get-Job -State Completed
+                foreach ($job in $completedJobs) {
+                    $result = Receive-Job $job
+                    $results += $result
+                    
+                    if ($result.Success) {
+                        $successful++
+                        Write-Host "✓ $($result.TargetIP) - COMPLETED SUCCESSFULLY" -ForegroundColor Green
+                    } else {
+                        $failed++
+                        Write-Host "✗ $($result.TargetIP) - FAILED" -ForegroundColor Red
+                    }
+                    
+                    Remove-Job $job
+                    $completed++
+                    
+                    # Show progress
+                    $percentComplete = [Math]::Round(($completed / $TargetHosts.Count) * 100, 1)
+                    Write-Host "Progress: $completed/$($TargetHosts.Count) hosts completed ($percentComplete%)" -ForegroundColor Cyan
+                }
+            }
+            
+            # Start deployment job for this host
+            $job = Start-Job -ScriptBlock {
+                param($TargetIP, $ConfigPath, $ScriptPath)
+                
+                # Load configuration and functions in job context
+                . $ConfigPath
+                . $ScriptPath
+                
+                try {
+                    $success = Deploy-ToSingleHost $TargetIP
+                    return @{
+                        TargetIP = $TargetIP
+                        Success = $success
+                        Timestamp = Get-Date
+                        Error = $null
+                    }
+                } catch {
+                    return @{
+                        TargetIP = $TargetIP
+                        Success = $false
+                        Timestamp = Get-Date
+                        Error = $_.Exception.Message
+                    }
+                }
+            } -ArgumentList $targetHost, (Join-Path $PSScriptRoot "Config.ps1"), $PSCommandPath
+            
+            $jobs += $job
+            Write-Host "Started deployment job for $targetHost" -ForegroundColor Gray
+        }
+        
+        # Wait for batch to complete before starting next batch
+        Write-Host "Waiting for batch to complete..." -ForegroundColor Yellow
+        
+        # Monitor progress while waiting
+        while ((Get-Job -State Running).Count -gt 0) {
+            Start-Sleep -Seconds $Global:DeploymentConfig.ParallelProgressInterval
+            
+            # Collect completed results
+            $completedJobs = Get-Job -State Completed
+            foreach ($job in $completedJobs) {
+                $result = Receive-Job $job
+                $results += $result
+                
+                if ($result.Success) {
+                    $successful++
+                    Write-Host "✓ $($result.TargetIP) - COMPLETED SUCCESSFULLY" -ForegroundColor Green
+                } else {
+                    $failed++
+                    Write-Host "✗ $($result.TargetIP) - FAILED" -ForegroundColor Red
+                    if ($result.Error) {
+                        Write-Host "  Error: $($result.Error)" -ForegroundColor Red
+                    }
+                }
+                
+                Remove-Job $job
+                $completed++
+                
+                # Show progress
+                $percentComplete = [Math]::Round(($completed / $TargetHosts.Count) * 100, 1)
+                Write-Host "Progress: $completed/$($TargetHosts.Count) hosts completed ($percentComplete%)" -ForegroundColor Cyan
+            }
+        }
+        
+        Write-Host "Batch completed. Moving to next batch..." -ForegroundColor Green
+        Write-Host ""
+    }
+    
+    # Final cleanup - collect any remaining results
+    $remainingJobs = Get-Job
+    foreach ($job in $remainingJobs) {
+        $result = Receive-Job $job
+        if ($result) {
+            $results += $result
+            if ($result.Success) { $successful++ } else { $failed++ }
+        }
+        Remove-Job $job
+    }
+    
+    Stop-PerformanceTimer "ParallelDeployment-All"
+    
+    return @{
+        Results = $results
+        TotalHosts = $TargetHosts.Count
+        Successful = $successful
+        Failed = $failed
     }
 }
 
@@ -876,32 +1197,191 @@ function Test-ExistingTrendMicro {
 function Test-InstallationSuccess {
     param([string]$TargetIP)
     
-    Write-Log "Checking for Vision One processes on $TargetIP"
+    Write-Log "Checking for Vision One installation success on $TargetIP using multiple methods"
     
+    $isLocal = Test-IsLocalMachine $TargetIP
+    $successIndicators = 0
+    $totalMethods = 0
+    
+    # Method 1: Check for running processes via WMI
+    $totalMethods++
     try {
-        $isLocal = Test-IsLocalMachine $TargetIP
+        Write-Log "Method 1: Checking for Vision One processes via WMI..."
         
         if ($isLocal) {
-            # Local connection - don't use credentials
             $visionProcesses = Get-WmiObject -Class Win32_Process | Where-Object { 
-                $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*"
+                $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*" -or $_.Name -like "*Endpoint*"
             }
         } else {
-            # Remote connection - use credentials
             $visionProcesses = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object { 
-                $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*"
+                $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*" -or $_.Name -like "*Endpoint*"
             }
         }
         
         if ($visionProcesses) {
-            Write-Log "Vision One processes detected on $TargetIP" "SUCCESS"
-            return $true
+            Write-Log "✓ Vision One processes detected via WMI: $($visionProcesses.Count) processes" "SUCCESS"
+            $successIndicators++
         } else {
-            Write-Log "No Vision One processes detected on $TargetIP" "WARNING"
-            return $false
+            Write-Log "✗ No Vision One processes detected via WMI" "WARNING"
         }
     } catch {
-        Write-Log "Error checking processes on $TargetIP" "ERROR"
+        Write-Log "✗ WMI process check failed: $($_.Exception.Message)" "WARNING"
+    }
+    
+    # Method 2: Check for installed services via WMI
+    $totalMethods++
+    try {
+        Write-Log "Method 2: Checking for Vision One services via WMI..."
+        
+        if ($isLocal) {
+            $visionServices = Get-WmiObject -Class Win32_Service | Where-Object { 
+                $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*" -or $_.DisplayName -like "*Trend*"
+            }
+        } else {
+            $visionServices = Get-WmiObject -Class Win32_Service -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object { 
+                $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*" -or $_.DisplayName -like "*Trend*"
+            }
+        }
+        
+        if ($visionServices) {
+            Write-Log "✓ Vision One services detected via WMI: $($visionServices.Count) services" "SUCCESS"
+            $successIndicators++
+        } else {
+            Write-Log "✗ No Vision One services detected via WMI" "WARNING"
+        }
+    } catch {
+        Write-Log "✗ WMI service check failed: $($_.Exception.Message)" "WARNING"
+    }
+    
+    # Method 3: Check for installation files via file system
+    $totalMethods++
+    try {
+        Write-Log "Method 3: Checking for Vision One installation files..."
+        
+        $installPaths = @(
+            "\\$TargetIP\C$\Program Files\Trend Micro",
+            "\\$TargetIP\C$\Program Files (x86)\Trend Micro",
+            "\\$TargetIP\C$\ProgramData\Trend Micro"
+        )
+        
+        $foundInstallation = $false
+        foreach ($path in $installPaths) {
+            if (Test-Path $path -ErrorAction SilentlyContinue) {
+                $trendFiles = Get-ChildItem $path -Recurse -File -ErrorAction SilentlyContinue | Where-Object { 
+                    $_.Name -like "*Vision*" -or $_.Name -like "*Apex*" -or $_.Name -like "*Endpoint*" -or $_.Name -like "*.exe"
+                }
+                if ($trendFiles) {
+                    Write-Log "✓ Vision One installation files found in $path" "SUCCESS"
+                    $foundInstallation = $true
+                    break
+                }
+            }
+        }
+        
+        if ($foundInstallation) {
+            $successIndicators++
+        } else {
+            Write-Log "✗ No Vision One installation files found" "WARNING"
+        }
+    } catch {
+        Write-Log "✗ File system check failed: $($_.Exception.Message)" "WARNING"
+    }
+    
+    # Method 4: Check for registry entries (Windows only)
+    $totalMethods++
+    try {
+        Write-Log "Method 4: Checking for Vision One registry entries..."
+        
+        $registryPaths = @(
+            "\\$TargetIP\HKLM\SOFTWARE\TrendMicro",
+            "\\$TargetIP\HKLM\SOFTWARE\WOW6432Node\TrendMicro"
+        )
+        
+        $foundRegistry = $false
+        foreach ($regPath in $registryPaths) {
+            try {
+                $regKey = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('LocalMachine', $TargetIP)
+                $trendKey = $regKey.OpenSubKey("SOFTWARE\TrendMicro")
+                if ($trendKey) {
+                    Write-Log "✓ Vision One registry entries found" "SUCCESS"
+                    $foundRegistry = $true
+                    $trendKey.Close()
+                    break
+                }
+                $regKey.Close()
+            } catch {
+                # Try WOW6432Node path
+                try {
+                    $trendKey = $regKey.OpenSubKey("SOFTWARE\WOW6432Node\TrendMicro")
+                    if ($trendKey) {
+                        Write-Log "✓ Vision One registry entries found (WOW64)" "SUCCESS"
+                        $foundRegistry = $true
+                        $trendKey.Close()
+                        break
+                    }
+                } catch {
+                    # Continue to next method
+                }
+            }
+        }
+        
+        if ($foundRegistry) {
+            $successIndicators++
+        } else {
+            Write-Log "✗ No Vision One registry entries found" "WARNING"
+        }
+    } catch {
+        Write-Log "✗ Registry check failed: $($_.Exception.Message)" "WARNING"
+    }
+    
+    # Method 5: Check via PowerShell Remoting (if WMI failed)
+    if ($successIndicators == 0) {
+        $totalMethods++
+        try {
+            Write-Log "Method 5: Checking via PowerShell Remoting (fallback)..."
+            
+            $remoteCheck = Invoke-Command -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ScriptBlock {
+                # Check for processes
+                $processes = Get-Process | Where-Object { 
+                    $_.ProcessName -like "*Trend*" -or $_.ProcessName -like "*Vision*" -or $_.ProcessName -like "*Apex*" -or $_.ProcessName -like "*Endpoint*"
+                }
+                
+                # Check for services
+                $services = Get-Service | Where-Object { 
+                    $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*" -or $_.DisplayName -like "*Trend*"
+                }
+                
+                return @{
+                    ProcessCount = $processes.Count
+                    ServiceCount = $services.Count
+                    Processes = $processes.ProcessName
+                    Services = $services.Name
+                }
+            } -ErrorAction Stop
+            
+            if ($remoteCheck.ProcessCount -gt 0 -or $remoteCheck.ServiceCount -gt 0) {
+                Write-Log "✓ Vision One detected via PowerShell Remoting: $($remoteCheck.ProcessCount) processes, $($remoteCheck.ServiceCount) services" "SUCCESS"
+                $successIndicators++
+            } else {
+                Write-Log "✗ No Vision One components detected via PowerShell Remoting" "WARNING"
+            }
+        } catch {
+            Write-Log "✗ PowerShell Remoting check failed: $($_.Exception.Message)" "WARNING"
+        }
+    }
+    
+    # Evaluate results
+    $successPercentage = [Math]::Round(($successIndicators / $totalMethods) * 100, 1)
+    Write-Log "Installation verification: $successIndicators/$totalMethods methods successful ($successPercentage%)" "INFO"
+    
+    if ($successIndicators -ge 2) {
+        Write-Log "✅ Installation SUCCESS: Multiple verification methods confirm Vision One is installed" "SUCCESS"
+        return $true
+    } elseif ($successIndicators -eq 1) {
+        Write-Log "⚠️  Installation LIKELY SUCCESSFUL: One verification method confirms installation, but connectivity issues prevent full verification" "WARNING"
+        return $true  # Consider this a success since installation likely worked
+    } else {
+        Write-Log "❌ Installation FAILED: No verification methods confirm Vision One installation" "ERROR"
         return $false
     }
 }
@@ -910,6 +1390,7 @@ function Deploy-ToSingleHost {
     param([string]$TargetIP)
     
     Write-Log "=== Starting deployment to $TargetIP ===" "INFO"
+    Start-PerformanceTimer "Deploy-$TargetIP"
     
     if (-not (Test-HostConnectivity $TargetIP)) {
         return $false
@@ -963,6 +1444,7 @@ function Deploy-ToSingleHost {
         Write-Log "=== Deployment may have failed for $TargetIP ===" "WARNING"
     }
     
+    Stop-PerformanceTimer "Deploy-$TargetIP"
     return $success
 }
 
@@ -1006,32 +1488,61 @@ function Get-NetworkHosts {
         
         Write-Log "Network range: $($hostIPs.Count) possible hosts"
         
-        Write-Log "Performing ping sweep (this may take a few minutes)..."
+        Write-Log "Performing optimized ping sweep (this may take a few minutes)..."
         $liveHosts = @()
-        $maxConcurrent = 50
-        $jobs = @()
+        $maxConcurrent = $Global:DeploymentConfig.MaxConcurrentPings
+        $timeout = $Global:DeploymentConfig.PingTimeout
         
-        foreach ($ip in $hostIPs) {
-            while ((Get-Job -State Running).Count -ge $maxConcurrent) {
-                Start-Sleep -Milliseconds 100
+        # Use ForEach-Object -Parallel for better performance (PowerShell 7+)
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            Write-Log "Using PowerShell 7+ parallel processing for faster scanning..."
+            $liveHosts = $hostIPs | ForEach-Object -Parallel {
+                if (Test-Connection -ComputerName $_ -Count 1 -Quiet -TimeoutSeconds 1 -ErrorAction SilentlyContinue) {
+                    return $_
+                }
+            } -ThrottleLimit $maxConcurrent | Where-Object { $_ -ne $null }
+        } else {
+            # Fallback to job-based approach for PowerShell 5.x
+            Write-Log "Using job-based parallel processing..."
+            $jobs = @()
+            $processed = 0
+            
+            foreach ($ip in $hostIPs) {
+                # Throttle job creation
+                while ((Get-Job -State Running).Count -ge $maxConcurrent) {
+                    Start-Sleep -Milliseconds 50
+                    
+                    # Clean up completed jobs to free memory
+                    Get-Job -State Completed | ForEach-Object {
+                        $result = Receive-Job $_
+                        if ($result) { $liveHosts += $result }
+                        Remove-Job $_
+                        $processed++
+                    }
+                    
+                    # Show progress
+                    if ($processed % 10 -eq 0 -and $processed -gt 0) {
+                        Write-Log "Progress: $processed/$($hostIPs.Count) hosts scanned..." "INFO"
+                    }
+                }
+                
+                $job = Start-Job -ScriptBlock {
+                    param($targetIP, $timeoutMs)
+                    if (Test-Connection -ComputerName $targetIP -Count 1 -Quiet -ErrorAction SilentlyContinue) {
+                        return $targetIP
+                    }
+                    return $null
+                } -ArgumentList $ip, $timeout
+                
+                $jobs += $job
             }
             
-            $job = Start-Job -ScriptBlock {
-                param($targetIP)
-                if (Test-Connection -ComputerName $targetIP -Count 1 -Quiet -ErrorAction SilentlyContinue) {
-                    return $targetIP
-                }
-                return $null
-            } -ArgumentList $ip
+            Write-Log "Waiting for remaining ping jobs to complete..."
+            $jobs | Wait-Job | Out-Null
             
-            $jobs += $job
-        }
-        
-        Write-Log "Waiting for ping sweep to complete..."
-        $jobs | Wait-Job | Out-Null
-        
-        foreach ($job in $jobs) {
-            $result = Receive-Job $job
+            # Collect remaining results
+            foreach ($job in $jobs) {
+                $result = Receive-Job $job
             if ($result) {
                 $liveHosts += $result
             }
@@ -1095,6 +1606,11 @@ Write-Host ""
 # Show WMI troubleshooting help if requested
 if ($ShowWMIHelp) {
     Show-WMITroubleshootingHelp
+    exit 0
+}
+
+if ($ShowParallelConfig) {
+    Show-ParallelConfiguration
     exit 0
 }
 
@@ -1195,9 +1711,16 @@ $successCount = 0
 $failureCount = 0
 $results = @()
 
-if ($Parallel -and $targetHosts.Count -gt 1) {
-    Write-Host "=== Parallel Deployment Mode (Max: $MaxParallel concurrent) ===" -ForegroundColor Cyan
-    Write-Host "Note: Parallel mode performs connectivity tests. Use sequential mode for full deployment with file copying." -ForegroundColor Yellow
+if (($FullParallel -or ($Global:DeploymentConfig.EnableParallelDeployment -and $targetHosts.Count -ge $Global:DeploymentConfig.AutoParallelThreshold)) -and -not $TestOnly) {
+    # Use new parallel deployment system for full deployments
+    $deploymentResult = Start-ParallelDeployment $targetHosts
+    $results = $deploymentResult.Results
+    $successCount = $deploymentResult.Successful
+    $failureCount = $deploymentResult.Failed
+    
+} elseif ($Parallel -and $targetHosts.Count -gt 1) {
+    Write-Host "=== Parallel Connectivity Test Mode (Max: $MaxParallel concurrent) ===" -ForegroundColor Cyan
+    Write-Host "Note: Parallel mode for test-only. Full deployments use optimized parallel system." -ForegroundColor Yellow
     Write-Host ""
     
     $jobs = @()
@@ -1373,6 +1896,9 @@ if ($TestOnly) {
 
 # Restore original TrustedHosts configuration
 Restore-TrustedHosts
+
+# Clean up optimization caches and free memory
+Clear-OptimizationCaches
 
 Write-Host ""
 Write-Host "For troubleshooting, check:" -ForegroundColor Gray

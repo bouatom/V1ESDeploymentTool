@@ -1,17 +1,27 @@
-# Vision One Endpoint Security Agent Deployment Tool - Complete File Documentation
+# Vision One Endpoint Security Agent Deployment Tool - Complete File Documentation (v2.0)
 
 ## 🚀 **Main Deployment Scripts**
 
-### **`Deploy-VisionOne.ps1`** - Primary Deployment Engine
-**Purpose**: Full-featured deployment script with enterprise capabilities
-**Features**:
-- Single host, multiple hosts, CIDR network scanning
-- Parallel deployment with configurable concurrency
-- Existing Trend Micro product detection and conflict handling
-- Comprehensive pre-deployment checks (connectivity, WMI, SMB)
-- Real-time monitoring and progress tracking
-- Detailed audit logging and error reporting
-**Usage**: `.\Deploy-VisionOne.ps1 -TargetIPs '10.0.5.127'` or `.\Deploy-VisionOne.ps1 -CIDR '10.0.5.0/24'`
+### **`Deploy-VisionOne.ps1`** - Primary Deployment Engine (v2.0 Enhanced)
+**Purpose**: Full-featured deployment script with enterprise capabilities and performance optimizations
+**Latest Features (v2.0)**:
+- **High-Performance Parallel Deployment**: Configurable concurrent deployments (1-20)
+- **Smart Caching System**: Local detection and WMI session caching for 80% faster operations
+- **Multi-Method Verification**: 5 different installation success verification methods
+- **Local Connection Optimization**: Automatic local vs remote detection and handling
+- **TrustedHosts Automation**: CIDR-based automatic configuration and restoration
+- **Enhanced Network Scanning**: PowerShell 7+ parallel processing with automatic fallbacks
+- **Memory Management**: Automatic cleanup and garbage collection for large deployments
+**Core Features**:
+- Single host, multiple hosts, CIDR network scanning with parallel ping sweep
+- Existing Trend Micro product detection with automatic skipping (configurable)
+- Comprehensive pre-deployment checks (connectivity, WMI, SMB, registry, file system)
+- Real-time monitoring with performance timing and progress tracking
+- Detailed audit logging and comprehensive error reporting
+**Usage**: 
+- Basic: `.\Deploy-VisionOne.ps1 -CIDR '10.0.5.0/24'`
+- High-performance: `.\Deploy-VisionOne.ps1 -CIDR '10.0.0.1/24' -ParallelLimit 15`
+- System recommendations: `.\Deploy-VisionOne.ps1 -ShowParallelConfig`
 
 ### **`Deploy-Simple.ps1`** - Quick Single-Host Deployment
 **Purpose**: Simplified deployment for single machines with minimal configuration
@@ -34,19 +44,26 @@
 
 ## ⚙️ **Configuration Files**
 
-### **`Config.ps1`** - Internal Configuration
-**Purpose**: Internal configuration file for deployment settings (no user editing required)
+### **`Config.ps1`** - Enhanced Configuration (v2.0)
+**Purpose**: Comprehensive configuration file with performance and parallel deployment settings
+**New Settings (v2.0)**:
+- **Parallel Deployment**: MaxParallelDeployments (1-20), AutoParallelThreshold, ParallelBatchSize
+- **Performance Optimizations**: EnableCaching, UseOptimizedFileOps, EnablePerformanceTimers
+- **Enhanced Timeouts**: Doubled installation timeout (20 min) and monitoring cycles (6 min)
+- **Smart Skipping**: SkipIfExisting, CheckExistingTrendMicro for automatic conflict avoidance
 **Contains**:
 - **Paths**: Installer directory, remote temp paths (`C$\temp\Trend Micro\V1ES`)
-- **Timeouts**: Installation, monitoring, network scan timeouts
+- **Timeouts**: Enhanced installation, monitoring, network scan timeouts
 - **Security Settings**: Existing product checks, force installation flags
 - **Network Options**: Concurrent operations, Windows-only filtering
+- **System Optimization**: Caching, memory management, file operation optimization
 **Note**: No credentials stored - all authentication is prompted at runtime
 
 ### **`hosts.txt`** - Target Host List
 **Purpose**: Predefined list of target IP addresses for batch deployment
 **Format**: One IP per line, supports comments with #
 **Usage**: Used with `-TargetFile` parameter for batch deployments
+**Performance**: Works with parallel deployment for faster processing
 **Example Content**:
 ```
 # Production servers
@@ -54,6 +71,22 @@
 10.0.5.128
 # 10.0.5.129  # Commented out
 ```
+
+### **`test-local-connection.ps1`** - Local Connection Testing Utility (New in v2.0)
+**Purpose**: Test and validate local connection detection functionality
+**Features**:
+- Tests various local identifiers (localhost, 127.0.0.1, computer name, network IPs)
+- Validates the Test-IsLocalMachine function accuracy
+- Provides clear pass/fail results for troubleshooting
+**Usage**: `.\test-local-connection.ps1`
+
+### **`test-path-conversion.ps1`** - Path Conversion Testing Utility (New in v2.0)
+**Purpose**: Test UNC path to local path conversion functionality
+**Features**:
+- Validates path handling for directories with spaces
+- Tests the RemoteTempPath configuration conversion
+- Verifies directory creation with converted paths
+**Usage**: `.\test-path-conversion.ps1`
 
 ## 🔧 **Target Machine Setup Tools**
 

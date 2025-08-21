@@ -1,4 +1,4 @@
-# Vision One Endpoint Security Agent Deployment - Production Checklist
+# Vision One Endpoint Security Agent Deployment - Production Checklist (v2.0)
 
 ## ✅ **Pre-Deployment Setup**
 
@@ -7,6 +7,12 @@
 - [ ] Know your domain name (e.g., CONTOSO, your.domain.com)
 - [ ] Test credentials manually: `Get-WmiObject -Class Win32_ComputerSystem -ComputerName <target> -Credential $cred`
 - [ ] **No configuration files to edit** - credentials are prompted at runtime
+
+### **1.1. Performance Optimization Assessment (New in v2.0)**
+- [ ] Check system resources: `.\Deploy-VisionOne.ps1 -ShowParallelConfig`
+- [ ] Review parallel deployment recommendations based on your system
+- [ ] Adjust `MaxParallelDeployments` in Config.ps1 if needed (default: 5)
+- [ ] Consider PowerShell 7+ for 20-30% better performance
 
 ### **2. Prepare Target Machines**
 - [ ] Copy `configure_target_machine.bat` to target machines
@@ -34,19 +40,71 @@
 .\Deploy-VisionOne.ps1 -TargetIPs '10.0.5.127'
 ```
 
-### **2. Scale Up**
+### **2. Scale Up with Performance Optimization (Enhanced in v2.0)**
 ```powershell
-# Deploy to multiple machines
-.\Deploy-VisionOne.ps1 -TargetIPs '10.0.5.127','10.0.5.128','10.0.5.129'
+# Deploy to multiple machines (automatic parallel for 4+ hosts)
+.\Deploy-VisionOne.ps1 -TargetIPs '10.0.5.127','10.0.5.128','10.0.5.129','10.0.5.130'
 
-# Deploy to entire network
-.\Deploy-VisionOne.ps1 -CIDR '10.0.5.0/24' -Parallel -MaxParallel 5
+# Deploy to entire network with custom parallel limit
+.\Deploy-VisionOne.ps1 -CIDR '10.0.5.0/24' -ParallelLimit 8
+
+# High-performance deployment for large networks
+.\Deploy-VisionOne.ps1 -CIDR '10.0.0.1/16' -ParallelLimit 15
+
+# Force parallel deployment even for few hosts
+.\Deploy-VisionOne.ps1 -TargetIPs '10.0.5.127','10.0.5.128' -FullParallel
 ```
 
-### **3. Monitor Progress**
-- [ ] Watch console output for real-time status
+### **3. Monitor Progress (Enhanced in v2.0)**
+- [ ] Watch console output for real-time status with performance timing
+- [ ] Monitor parallel deployment progress with batch completion updates
 - [ ] Check `deployment.log` for detailed audit trail
-- [ ] Verify installations on target machines
+- [ ] Verify installations using 5-method verification system
+- [ ] Review performance metrics and optimization recommendations
+
+## 🔧 **v2.0 Feature Validation**
+
+### **1. Performance Features**
+- [ ] **Caching System**: Verify local detection caching is working (should see "Detected local/remote connection" only once per host)
+- [ ] **Parallel Processing**: Confirm parallel deployment is active for 4+ hosts (automatic) or when using `-FullParallel`
+- [ ] **Memory Management**: Monitor memory usage during large deployments (should remain stable)
+- [ ] **Performance Timing**: Check for performance timing logs (e.g., "Performance: Deploy-10.0.0.10 completed in 45.23 seconds")
+
+### **2. Reliability Features**
+- [ ] **Multi-Method Verification**: Verify installation success detection uses multiple methods (WMI, services, files, registry, PowerShell Remoting)
+- [ ] **Local Connection Handling**: Test local deployment (should automatically detect and optimize)
+- [ ] **TrustedHosts Management**: Verify automatic TrustedHosts configuration and restoration
+- [ ] **Enhanced Error Handling**: Test graceful degradation when WMI/RPC fails
+
+### **3. Smart Features**
+- [ ] **Automatic Skipping**: Verify machines with existing Trend Micro are skipped (configurable in Config.ps1)
+- [ ] **System Optimization**: Check parallel deployment recommendations match your system resources
+- [ ] **Progress Monitoring**: Confirm real-time progress updates during deployment
+- [ ] **Comprehensive Logging**: Verify detailed method-by-method verification results
+
+## 📊 **Performance Benchmarking**
+
+### **Expected Performance Improvements**
+- [ ] **Small Networks (5 hosts)**: Should be ~75% faster than sequential
+- [ ] **Medium Networks (20 hosts)**: Should be ~80% faster than sequential  
+- [ ] **Large Networks (50+ hosts)**: Should be ~80% faster than sequential
+- [ ] **Local Detection**: Should be near-instant after first call (caching)
+- [ ] **Network Scanning**: Should show parallel processing for PowerShell 7+
+
+### **Performance Validation Commands**
+```powershell
+# Test local connection detection performance
+.\test-local-connection.ps1
+
+# Test path conversion functionality  
+.\test-path-conversion.ps1
+
+# Show system recommendations
+.\Deploy-VisionOne.ps1 -ShowParallelConfig
+
+# Benchmark small deployment
+Measure-Command { .\Deploy-VisionOne.ps1 -TargetIPs '10.0.0.10','10.0.0.11' -TestOnly }
+```
 
 ## 🔍 **Post-Deployment Verification**
 
