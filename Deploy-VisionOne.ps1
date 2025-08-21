@@ -14,7 +14,8 @@ param(
     [int]$MaxParallel = 5,
     [switch]$SkipExistingCheck,
     [switch]$ForceInstall,
-    [switch]$ShowWMIHelp
+    [switch]$ShowWMIHelp,
+    [switch]$ConfigureTrustedHosts
 )
 
 # Load configuration
@@ -63,35 +64,73 @@ function Write-Log {
 
 function Show-WMITroubleshootingHelp {
     Write-Host ""
-    Write-Host "=== WMI Connection Troubleshooting Guide ===" -ForegroundColor Cyan
+    Write-Host "=== WMI & PowerShell Remoting Troubleshooting Guide ===" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "If WMI connections are failing, try these solutions:" -ForegroundColor Yellow
+    Write-Host "If WMI/PowerShell Remoting connections are failing, try these solutions:" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "1. Windows Firewall Configuration:" -ForegroundColor White
     Write-Host "   netsh advfirewall firewall set rule group=`"Windows Management Instrumentation (WMI)`" new enable=yes" -ForegroundColor Gray
     Write-Host "   netsh advfirewall firewall set rule group=`"Remote Administration`" new enable=yes" -ForegroundColor Gray
+    Write-Host "   netsh advfirewall firewall set rule group=`"Windows Remote Management`" new enable=yes" -ForegroundColor Gray
     Write-Host ""
     Write-Host "2. Enable WinRM (for PowerShell Remoting):" -ForegroundColor White
     Write-Host "   winrm quickconfig -force" -ForegroundColor Gray
     Write-Host "   winrm set winrm/config/service/auth @{Basic=`"true`"}" -ForegroundColor Gray
+    Write-Host "   winrm set winrm/config/client/auth @{Basic=`"true`"}" -ForegroundColor Gray
+    Write-Host "   winrm set winrm/config/service @{AllowUnencrypted=`"true`"}" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "3. DCOM Configuration:" -ForegroundColor White
+    Write-Host "3. TrustedHosts Configuration (run on deployment machine):" -ForegroundColor White
+    Write-Host "   winrm set winrm/config/client @{TrustedHosts=`"*`"}" -ForegroundColor Gray
+    Write-Host "   # Or for specific IPs: winrm set winrm/config/client @{TrustedHosts=`"10.0.0.10,10.0.0.11`"}" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "4. DCOM Configuration:" -ForegroundColor White
     Write-Host "   - Run dcomcnfg.exe as administrator" -ForegroundColor Gray
     Write-Host "   - Navigate to Component Services > Computers > My Computer > DCOM Config" -ForegroundColor Gray
     Write-Host "   - Right-click 'Windows Management Instrumentation' > Properties" -ForegroundColor Gray
     Write-Host "   - Security tab > Authentication Level: Set to 'None'" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "4. Registry Settings (run on target machines):" -ForegroundColor White
+    Write-Host "5. Registry Settings (run on target machines):" -ForegroundColor White
     Write-Host "   reg add HKLM\SOFTWARE\Microsoft\Ole /v EnableDCOMHTTP /t REG_DWORD /d 1 /f" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "5. Services to verify are running:" -ForegroundColor White
+    Write-Host "6. Services to verify are running:" -ForegroundColor White
     Write-Host "   - Windows Management Instrumentation" -ForegroundColor Gray
     Write-Host "   - Remote Registry" -ForegroundColor Gray
     Write-Host "   - Windows Remote Management (WS-Management)" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "6. Alternative: Use PsExec for remote execution:" -ForegroundColor White
+    Write-Host "7. Alternative: Use PsExec for remote execution:" -ForegroundColor White
     Write-Host "   Download PsExec from Microsoft Sysinternals and add to PATH" -ForegroundColor Gray
     Write-Host ""
+    Write-Host "8. Quick Fix Commands (run as administrator on deployment machine):" -ForegroundColor White
+    Write-Host "   Enable-PSRemoting -Force" -ForegroundColor Gray
+    Write-Host "   Set-Item WSMan:\localhost\Client\TrustedHosts -Value '*' -Force" -ForegroundColor Gray
+    Write-Host ""
+}
+
+function Initialize-WinRMSettings {
+    Write-Log "Checking and configuring WinRM settings for IP address connectivity..."
+    
+    try {
+        # Check if WinRM service is running
+        $winrmService = Get-Service -Name WinRM -ErrorAction SilentlyContinue
+        if ($winrmService.Status -ne 'Running') {
+            Write-Log "Starting WinRM service..." "WARNING"
+            Start-Service -Name WinRM -ErrorAction Stop
+        }
+        
+        # Check current TrustedHosts setting
+        $currentTrustedHosts = (Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction SilentlyContinue).Value
+        Write-Log "Current TrustedHosts: $currentTrustedHosts" "INFO"
+        
+        if ([string]::IsNullOrEmpty($currentTrustedHosts) -or $currentTrustedHosts -eq "") {
+            Write-Log "TrustedHosts is empty. This may cause IP address connection issues." "WARNING"
+            Write-Log "Consider running: Set-Item WSMan:\localhost\Client\TrustedHosts -Value '*' -Force" "INFO"
+        }
+        
+        return $true
+    } catch {
+        Write-Log "Failed to configure WinRM settings: $($_.Exception.Message)" "WARNING"
+        return $false
+    }
 }
 
 function Test-InstallerAvailability {
@@ -247,33 +286,119 @@ function Copy-InstallerFiles {
         Copy-Item -Path $zipFile.FullName -Destination $targetZipPath -Force
         Write-Log "Copied zip file to target machine"
         
-        $extractionResult = Invoke-Command -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ScriptBlock {
-            param($ZipPath, $ExtractPath)
+        # Try multiple methods for remote extraction
+        $extractionResult = $null
+        
+        # Method 1: Try PowerShell Remoting with TrustedHosts configuration
+        try {
+            Write-Log "Attempting file extraction via PowerShell Remoting..."
             
+            # Check if we need to add to TrustedHosts
+            $currentTrustedHosts = (Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction SilentlyContinue).Value
+            $needsRestore = $false
+            
+            if ($currentTrustedHosts -notlike "*$TargetIP*" -and $currentTrustedHosts -ne "*") {
+                Write-Log "Adding $TargetIP to TrustedHosts temporarily..."
+                $originalTrustedHosts = $currentTrustedHosts
+                $newTrustedHosts = if ($currentTrustedHosts) { "$currentTrustedHosts,$TargetIP" } else { $TargetIP }
+                Set-Item WSMan:\localhost\Client\TrustedHosts -Value $newTrustedHosts -Force
+                $needsRestore = $true
+            }
+            
+            $extractionResult = Invoke-Command -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ScriptBlock {
+                param($ZipPath, $ExtractPath)
+                
+                try {
+                    if (-not (Test-Path $ExtractPath)) {
+                        New-Item -ItemType Directory -Path $ExtractPath -Force | Out-Null
+                    }
+                    
+                    Add-Type -AssemblyName System.IO.Compression.FileSystem
+                    [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $ExtractPath)
+                    
+                    $extractedFiles = Get-ChildItem -Path $ExtractPath -Recurse -File
+                    $mainExe = Get-ChildItem -Path $ExtractPath -Name "*.exe" -Recurse | Select-Object -First 1
+                    
+                    return @{
+                        Success = $true
+                        FileCount = $extractedFiles.Count
+                        MainExecutable = $mainExe
+                    }
+                    
+                } catch {
+                    return @{
+                        Success = $false
+                        Error = $_.Exception.Message
+                    }
+                }
+            } -ArgumentList "C:\temp\VisionOneSEP\$($zipFile.Name)", "C:\temp\VisionOneSEP" -ErrorAction Stop
+            
+            # Restore original TrustedHosts if we modified it
+            if ($needsRestore) {
+                Write-Log "Restoring original TrustedHosts configuration..."
+                Set-Item WSMan:\localhost\Client\TrustedHosts -Value $originalTrustedHosts -Force
+            }
+            
+        } catch {
+            Write-Log "PowerShell Remoting extraction failed: $($_.Exception.Message)" "WARNING"
+            
+            # Restore TrustedHosts on error
+            if ($needsRestore -and $originalTrustedHosts) {
+                Set-Item WSMan:\localhost\Client\TrustedHosts -Value $originalTrustedHosts -Force
+            }
+            
+            # Method 2: Try using UNC path with robocopy for extraction
             try {
-                if (-not (Test-Path $ExtractPath)) {
-                    New-Item -ItemType Directory -Path $ExtractPath -Force | Out-Null
+                Write-Log "Attempting extraction via UNC path and robocopy..."
+                $remoteExtractPath = "\\$TargetIP\C$\temp\VisionOneSEP"
+                
+                if (-not (Test-Path $remoteExtractPath)) {
+                    New-Item -ItemType Directory -Path $remoteExtractPath -Force | Out-Null
                 }
                 
+                # Extract locally first, then copy
+                $localTempPath = "$env:TEMP\VisionOneSEP_$TargetIP"
+                if (Test-Path $localTempPath) {
+                    Remove-Item $localTempPath -Recurse -Force
+                }
+                New-Item -ItemType Directory -Path $localTempPath -Force | Out-Null
+                
                 Add-Type -AssemblyName System.IO.Compression.FileSystem
-                [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $ExtractPath)
+                [System.IO.Compression.ZipFile]::ExtractToDirectory($zipFile.FullName, $localTempPath)
                 
-                $extractedFiles = Get-ChildItem -Path $ExtractPath -Recurse -File
-                $mainExe = Get-ChildItem -Path $ExtractPath -Name "*.exe" -Recurse | Select-Object -First 1
+                # Copy extracted files to remote machine
+                robocopy $localTempPath $remoteExtractPath /E /R:3 /W:5 /NP | Out-Null
                 
-                return @{
+                $extractedFiles = Get-ChildItem -Path $localTempPath -Recurse -File
+                $mainExe = Get-ChildItem -Path $localTempPath -Name "*.exe" -Recurse | Select-Object -First 1
+                
+                # Clean up local temp
+                Remove-Item $localTempPath -Recurse -Force -ErrorAction SilentlyContinue
+                
+                $extractionResult = @{
                     Success = $true
                     FileCount = $extractedFiles.Count
                     MainExecutable = $mainExe
                 }
                 
+                Write-Log "Extraction via UNC path successful" "SUCCESS"
+                
             } catch {
-                return @{
+                Write-Log "UNC path extraction also failed: $($_.Exception.Message)" "WARNING"
+                
+                # Method 3: Manual instruction fallback
+                Write-Log "All extraction methods failed. Manual intervention required." "ERROR"
+                Write-Log "Please manually:" "INFO"
+                Write-Log "1. Copy $($zipFile.FullName) to \\$TargetIP\C$\temp\VisionOneSEP\" "INFO"
+                Write-Log "2. Extract the ZIP file on the target machine" "INFO"
+                Write-Log "3. Note the main executable name for installation" "INFO"
+                
+                $extractionResult = @{
                     Success = $false
-                    Error = $_.Exception.Message
+                    Error = "All extraction methods failed - manual intervention required"
                 }
             }
-        } -ArgumentList "C:\temp\VisionOneSEP\$($zipFile.Name)", "C:\temp\VisionOneSEP"
+        }
         
         if ($extractionResult.Success) {
             Write-Log "Successfully extracted $($extractionResult.FileCount) files on $TargetIP" "SUCCESS"
@@ -705,10 +830,35 @@ if ($ShowWMIHelp) {
     exit 0
 }
 
+# Configure TrustedHosts if requested
+if ($ConfigureTrustedHosts) {
+    Write-Host "Configuring TrustedHosts for IP address connectivity..." -ForegroundColor Yellow
+    try {
+        $currentTrustedHosts = (Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction SilentlyContinue).Value
+        Write-Host "Current TrustedHosts: $currentTrustedHosts" -ForegroundColor Gray
+        
+        Write-Host "Setting TrustedHosts to '*' (all hosts)..." -ForegroundColor Yellow
+        Set-Item WSMan:\localhost\Client\TrustedHosts -Value '*' -Force
+        
+        Write-Host "TrustedHosts configured successfully!" -ForegroundColor Green
+        Write-Host "You can now use IP addresses with PowerShell Remoting." -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Security Note: This allows connections to any host. For production," -ForegroundColor Yellow
+        Write-Host "consider using specific IP ranges instead of '*'." -ForegroundColor Yellow
+    } catch {
+        Write-Host "Failed to configure TrustedHosts: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Try running PowerShell as Administrator." -ForegroundColor Yellow
+    }
+    exit 0
+}
+
 if (-not (Test-InstallerAvailability)) {
     Write-Host "Deployment cannot proceed without a valid installer." -ForegroundColor Red
     exit 1
 }
+
+# Initialize WinRM settings for better IP address connectivity
+Initialize-WinRMSettings | Out-Null
 
 $targetHosts = Get-TargetHosts
 
@@ -730,9 +880,13 @@ if (-not $targetHosts) {
     Write-Host "  -Parallel          : Deploy to multiple hosts simultaneously"
     Write-Host "  -MaxParallel       : Maximum parallel deployments (default: 5)"
     Write-Host "  -ShowWMIHelp       : Display WMI troubleshooting guide"
+    Write-Host "  -ConfigureTrustedHosts : Configure TrustedHosts for IP connectivity"
     Write-Host ""
-    Write-Host "WMI Troubleshooting:" -ForegroundColor Cyan
-    Write-Host "  If experiencing WMI connection issues, run:"
+    Write-Host "Troubleshooting:" -ForegroundColor Cyan
+    Write-Host "  If experiencing IP address connection issues:"
+    Write-Host "  .\Deploy-VisionOne.ps1 -ConfigureTrustedHosts"
+    Write-Host ""
+    Write-Host "  For comprehensive troubleshooting:"
     Write-Host "  .\Deploy-VisionOne.ps1 -ShowWMIHelp"
     exit 1
 }
