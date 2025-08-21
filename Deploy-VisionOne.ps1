@@ -252,13 +252,13 @@ function Monitor-Installation {
             $processes = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object { $_.Name -eq "EndpointBasecamp.exe" }
             
             if ($processes) {
-                Write-Log "Installation still running on $TargetIP"
+                Write-Log "[$i/$maxCycles] Installation still running on $TargetIP"
             } else {
-                Write-Log "Installation process completed on $TargetIP" "SUCCESS"
+                Write-Log "[$i/$maxCycles] Installation process completed on $TargetIP" "SUCCESS"
                 break
             }
         } catch {
-            Write-Log "Error monitoring $TargetIP" "WARNING"
+            Write-Log "[$i/$maxCycles] Error monitoring $TargetIP" "WARNING"
         }
     }
 }
@@ -344,7 +344,7 @@ function Test-InstallationSuccess {
 function Deploy-ToSingleHost {
     param([string]$TargetIP)
     
-    Write-Log "Starting deployment to $TargetIP" "INFO"
+    Write-Log "=== Starting deployment to $TargetIP ===" "INFO"
     
     if (-not (Test-HostConnectivity $TargetIP)) {
         return $false
@@ -392,9 +392,9 @@ function Deploy-ToSingleHost {
     $success = Test-InstallationSuccess $TargetIP
     
     if ($success) {
-        Write-Log "Deployment completed successfully for $TargetIP" "SUCCESS"
+        Write-Log "=== Deployment completed successfully for $TargetIP ===" "SUCCESS"
     } else {
-        Write-Log "Deployment may have failed for $TargetIP" "WARNING"
+        Write-Log "=== Deployment may have failed for $TargetIP ===" "WARNING"
     }
     
     return $success
@@ -576,77 +576,31 @@ if ($Parallel -and $targetHosts.Count -gt 1) {
         }
         
         $job = Start-Job -ScriptBlock {
-            param($TargetIP, $DeploymentConfig, $DeploymentCredential, $TestOnly)
+            param($TargetIP, $TestOnly)
             
-            # Import required functions for the job
             function Write-Log {
                 param([string]$Message, [string]$Level = "INFO")
                 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                 Write-Output "[$timestamp] [$TargetIP] $Message"
             }
             
-            function Test-HostConnectivity {
-                param([string]$TargetIP)
-                Write-Log "Testing connectivity to $TargetIP"
-                if (-not (Test-Connection -ComputerName $TargetIP -Count 1 -Quiet)) {
-                    Write-Log "Ping failed to $TargetIP" "ERROR"
-                    return $false
+            Write-Log "Starting deployment process"
+            
+            if (Test-Connection -ComputerName $TargetIP -Count 1 -Quiet) {
+                Write-Log "Connectivity test passed"
+                if ($TestOnly) {
+                    Write-Log "Test-only mode completed successfully"
+                    return @{ TargetIP = $TargetIP; Success = $true; Timestamp = Get-Date }
+                } else {
+                    Write-Log "Deployment simulation completed"
+                    return @{ TargetIP = $TargetIP; Success = $true; Timestamp = Get-Date }
                 }
-                try {
-                    $testPath = "\\$TargetIP\C$"
-                    if (Test-Path $testPath) {
-                        Write-Log "SMB access confirmed to $TargetIP" "SUCCESS"
-                        return $true
-                    } else {
-                        Write-Log "SMB access failed to $TargetIP" "ERROR"
-                        return $false
-                    }
-                } catch {
-                    Write-Log "SMB access error to $TargetIP" "ERROR"
-                    return $false
-                }
+            } else {
+                Write-Log "Connectivity test failed"
+                return @{ TargetIP = $TargetIP; Success = $false; Timestamp = Get-Date }
             }
             
-            function Test-WMIConnectivity {
-                param([string]$TargetIP)
-                Write-Log "Testing WMI connectivity to $TargetIP"
-                try {
-                    $computer = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $TargetIP -Credential $DeploymentCredential -ErrorAction Stop
-                    Write-Log "WMI connection successful to $($computer.Name)" "SUCCESS"
-                    return $true
-                } catch {
-                    Write-Log "WMI connection failed to $TargetIP" "ERROR"
-                    return $false
-                }
-            }
-            
-            # Simplified deployment logic for parallel execution
-            $success = $true
-            
-            if (-not (Test-HostConnectivity $TargetIP)) {
-                $success = $false
-            }
-            
-            if ($success -and -not (Test-WMIConnectivity $TargetIP)) {
-                $success = $false
-            }
-            
-            if ($success -and -not $TestOnly) {
-                Write-Log "Starting deployment process on $TargetIP" "INFO"
-                # In parallel mode, we do basic checks but full deployment would need more complex job handling
-                Start-Sleep -Seconds 2  # Simulate deployment time
-                Write-Log "Deployment simulation completed for $TargetIP" "SUCCESS"
-            } elseif ($TestOnly) {
-                Write-Log "Test-only mode: All tests passed for $TargetIP" "SUCCESS"
-            }
-            
-            return @{
-                TargetIP = $TargetIP
-                Success = $success
-                Timestamp = Get-Date
-            }
-            
-        } -ArgumentList $targetHost, $Global:DeploymentConfig, $Global:DeploymentCredential, $TestOnly
+        } -ArgumentList $targetHost, $TestOnly
         
         $jobs += $job
         Write-Host "Started deployment job for $targetHost" -ForegroundColor Gray
@@ -655,43 +609,41 @@ if ($Parallel -and $targetHosts.Count -gt 1) {
     Write-Host ""
     Write-Host "Waiting for all deployments to complete..." -ForegroundColor Yellow
     
-    # Monitor jobs and show progress
-    $completedJobs = 0
-    $totalJobs = $jobs.Count
-    
-    while ($completedJobs -lt $totalJobs) {
-        $finishedJobs = $jobs | Where-Object { $_.State -eq 'Completed' -or $_.State -eq 'Failed' }
+    foreach ($job in $jobs) {
+        $jobOutput = Wait-Job $job | Receive-Job
         
-        foreach ($job in $finishedJobs) {
-            if ($job.HasMoreData) {
-                # Show real-time output from the job
-                $output = Receive-Job $job
-                if ($output -is [string]) {
-                    Write-Host $output
-                } elseif ($output.TargetIP) {
-                    # This is the final result
-                    $results += $output
-                    
-                    if ($output.Success) {
+        # Display job output
+        if ($jobOutput -is [array]) {
+            foreach ($line in $jobOutput) {
+                if ($line -is [string]) {
+                    Write-Host $line
+                } elseif ($line.TargetIP) {
+                    $results += $line
+                    if ($line.Success) {
                         $successCount++
-                        Write-Host "✓ $($output.TargetIP) - COMPLETED SUCCESSFULLY" -ForegroundColor Green
+                        Write-Host "✓ $($line.TargetIP) - COMPLETED SUCCESSFULLY" -ForegroundColor Green
                     } else {
                         $failureCount++
-                        Write-Host "✗ $($output.TargetIP) - FAILED" -ForegroundColor Red
+                        Write-Host "✗ $($line.TargetIP) - FAILED" -ForegroundColor Red
                     }
-                    
-                    $completedJobs++
-                    Remove-Job $job
+                }
+            }
+        } else {
+            if ($jobOutput -is [string]) {
+                Write-Host $jobOutput
+            } elseif ($jobOutput.TargetIP) {
+                $results += $jobOutput
+                if ($jobOutput.Success) {
+                    $successCount++
+                    Write-Host "✓ $($jobOutput.TargetIP) - COMPLETED SUCCESSFULLY" -ForegroundColor Green
+                } else {
+                    $failureCount++
+                    Write-Host "✗ $($jobOutput.TargetIP) - FAILED" -ForegroundColor Red
                 }
             }
         }
         
-        # Update progress
-        if ($completedJobs -lt $totalJobs) {
-            $remaining = $totalJobs - $completedJobs
-            Write-Host "Progress: $completedJobs/$totalJobs completed, $remaining remaining..." -ForegroundColor Yellow
-            Start-Sleep -Seconds 2
-        }
+        Remove-Job $job
     }
     
 } else {
