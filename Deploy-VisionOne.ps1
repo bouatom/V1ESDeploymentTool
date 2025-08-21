@@ -13,7 +13,8 @@ param(
     [switch]$Parallel,
     [int]$MaxParallel = 5,
     [switch]$SkipExistingCheck,
-    [switch]$ForceInstall
+    [switch]$ForceInstall,
+    [switch]$ShowWMIHelp
 )
 
 # Load configuration
@@ -58,6 +59,39 @@ function Write-Log {
         default { "White" }
     }
     Write-Host "[$timestamp] $Message" -ForegroundColor $color
+}
+
+function Show-WMITroubleshootingHelp {
+    Write-Host ""
+    Write-Host "=== WMI Connection Troubleshooting Guide ===" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "If WMI connections are failing, try these solutions:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "1. Windows Firewall Configuration:" -ForegroundColor White
+    Write-Host "   netsh advfirewall firewall set rule group=`"Windows Management Instrumentation (WMI)`" new enable=yes" -ForegroundColor Gray
+    Write-Host "   netsh advfirewall firewall set rule group=`"Remote Administration`" new enable=yes" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "2. Enable WinRM (for PowerShell Remoting):" -ForegroundColor White
+    Write-Host "   winrm quickconfig -force" -ForegroundColor Gray
+    Write-Host "   winrm set winrm/config/service/auth @{Basic=`"true`"}" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "3. DCOM Configuration:" -ForegroundColor White
+    Write-Host "   - Run dcomcnfg.exe as administrator" -ForegroundColor Gray
+    Write-Host "   - Navigate to Component Services > Computers > My Computer > DCOM Config" -ForegroundColor Gray
+    Write-Host "   - Right-click 'Windows Management Instrumentation' > Properties" -ForegroundColor Gray
+    Write-Host "   - Security tab > Authentication Level: Set to 'None'" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "4. Registry Settings (run on target machines):" -ForegroundColor White
+    Write-Host "   reg add HKLM\SOFTWARE\Microsoft\Ole /v EnableDCOMHTTP /t REG_DWORD /d 1 /f" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "5. Services to verify are running:" -ForegroundColor White
+    Write-Host "   - Windows Management Instrumentation" -ForegroundColor Gray
+    Write-Host "   - Remote Registry" -ForegroundColor Gray
+    Write-Host "   - Windows Remote Management (WS-Management)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "6. Alternative: Use PsExec for remote execution:" -ForegroundColor White
+    Write-Host "   Download PsExec from Microsoft Sysinternals and add to PATH" -ForegroundColor Gray
+    Write-Host ""
 }
 
 function Test-InstallerAvailability {
@@ -128,14 +162,61 @@ function Test-WMIConnectivity {
     
     Write-Log "Testing WMI connectivity to $TargetIP"
     
+    # Method 1: Try standard WMI with timeout
     try {
+        Write-Log "Attempting standard WMI connection..."
         $computer = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
         Write-Log "WMI connection successful to $($computer.Name)" "SUCCESS"
         return $true
     } catch {
-        Write-Log "WMI connection failed to $TargetIP" "ERROR"
-        return $false
+        Write-Log "Standard WMI failed: $($_.Exception.Message)" "WARNING"
     }
+    
+    # Method 2: Try CIM (newer WMI) with WSMan
+    try {
+        Write-Log "Attempting CIM connection via WSMan..."
+        $session = New-CimSession -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
+        $computer = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem -ErrorAction Stop
+        Remove-CimSession $session
+        Write-Log "CIM connection successful to $($computer.Name)" "SUCCESS"
+        return $true
+    } catch {
+        Write-Log "CIM via WSMan failed: $($_.Exception.Message)" "WARNING"
+    }
+    
+    # Method 3: Try CIM with DCOM (fallback for older systems)
+    try {
+        Write-Log "Attempting CIM connection via DCOM..."
+        $sessionOption = New-CimSessionOption -Protocol Dcom
+        $session = New-CimSession -ComputerName $TargetIP -Credential $Global:DeploymentCredential -SessionOption $sessionOption -ErrorAction Stop
+        $computer = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem -ErrorAction Stop
+        Remove-CimSession $session
+        Write-Log "CIM via DCOM connection successful to $($computer.Name)" "SUCCESS"
+        return $true
+    } catch {
+        Write-Log "CIM via DCOM failed: $($_.Exception.Message)" "WARNING"
+    }
+    
+    # Method 4: Try PowerShell Remoting as final fallback
+    try {
+        Write-Log "Attempting PowerShell Remoting as WMI alternative..."
+        $result = Invoke-Command -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ScriptBlock {
+            Get-ComputerInfo | Select-Object ComputerName, WindowsVersion
+        } -ErrorAction Stop
+        Write-Log "PowerShell Remoting successful to $($result.ComputerName)" "SUCCESS"
+        return $true
+    } catch {
+        Write-Log "PowerShell Remoting failed: $($_.Exception.Message)" "WARNING"
+    }
+    
+    Write-Log "All WMI/remote connection methods failed to $TargetIP" "ERROR"
+    Write-Log "Troubleshooting tips:" "INFO"
+    Write-Log "  - Check Windows Firewall (allow WMI, DCOM, PowerShell Remoting)" "INFO"
+    Write-Log "  - Verify Remote Registry service is running" "INFO"
+    Write-Log "  - Check DCOM configuration (dcomcnfg.exe)" "INFO"
+    Write-Log "  - Ensure WinRM is enabled: winrm quickconfig" "INFO"
+    Write-Log "  - Verify credentials have admin rights on target" "INFO"
+    return $false
 }
 
 function Copy-InstallerFiles {
@@ -218,29 +299,88 @@ function Start-Installation {
     param([string]$TargetIP)
     
     Write-Log "Starting installation on $TargetIP"
+    $installCommand = $Global:DeploymentConfig.InstallerCommand
     
+    # Method 1: Try WMI Win32_Process Create
     try {
-        $installCommand = $Global:DeploymentConfig.InstallerCommand
-        
-        $result = Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList $installCommand -ComputerName $TargetIP -Credential $Global:DeploymentCredential
+        Write-Log "Attempting installation via WMI..."
+        $result = Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList $installCommand -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
         
         if ($result.ReturnValue -eq 0) {
-            Write-Log "Installation started successfully on $TargetIP" "SUCCESS"
+            Write-Log "Installation started successfully via WMI on $TargetIP (ProcessId: $($result.ProcessId))" "SUCCESS"
             return $result.ProcessId
         } else {
-            Write-Log "Installation failed to start on $TargetIP" "ERROR"
-            return $null
+            Write-Log "WMI process creation failed with return code: $($result.ReturnValue)" "WARNING"
         }
     } catch {
-        Write-Log "Installation error on $TargetIP" "ERROR"
-        return $null
+        Write-Log "WMI installation method failed: $($_.Exception.Message)" "WARNING"
     }
+    
+    # Method 2: Try CIM Win32_Process Create
+    try {
+        Write-Log "Attempting installation via CIM..."
+        $session = New-CimSession -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
+        $result = Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$installCommand} -ErrorAction Stop
+        Remove-CimSession $session
+        
+        if ($result.ReturnValue -eq 0) {
+            Write-Log "Installation started successfully via CIM on $TargetIP (ProcessId: $($result.ProcessId))" "SUCCESS"
+            return $result.ProcessId
+        } else {
+            Write-Log "CIM process creation failed with return code: $($result.ReturnValue)" "WARNING"
+        }
+    } catch {
+        Write-Log "CIM installation method failed: $($_.Exception.Message)" "WARNING"
+    }
+    
+    # Method 3: Try PowerShell Remoting
+    try {
+        Write-Log "Attempting installation via PowerShell Remoting..."
+        $result = Invoke-Command -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ScriptBlock {
+            param($Command)
+            $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$Command`"" -PassThru -WindowStyle Hidden
+            return @{
+                ProcessId = $process.Id
+                ProcessName = $process.ProcessName
+            }
+        } -ArgumentList $installCommand -ErrorAction Stop
+        
+        Write-Log "Installation started successfully via PowerShell Remoting on $TargetIP (ProcessId: $($result.ProcessId))" "SUCCESS"
+        return $result.ProcessId
+    } catch {
+        Write-Log "PowerShell Remoting installation method failed: $($_.Exception.Message)" "WARNING"
+    }
+    
+    # Method 4: Try PsExec as final fallback (if available)
+    try {
+        Write-Log "Attempting installation via PsExec (if available)..."
+        $psexecPath = Get-Command "psexec.exe" -ErrorAction SilentlyContinue
+        if ($psexecPath) {
+            $username = $Global:DeploymentCredential.UserName
+            $password = $Global:DeploymentCredential.GetNetworkCredential().Password
+            $psexecCommand = "psexec.exe \\$TargetIP -u `"$username`" -p `"$password`" -d $installCommand"
+            
+            $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$psexecCommand`"" -PassThru -WindowStyle Hidden -Wait
+            if ($process.ExitCode -eq 0) {
+                Write-Log "Installation started successfully via PsExec on $TargetIP" "SUCCESS"
+                return 1  # Return dummy process ID since PsExec doesn't return the remote process ID
+            }
+        } else {
+            Write-Log "PsExec not available in PATH" "INFO"
+        }
+    } catch {
+        Write-Log "PsExec installation method failed: $($_.Exception.Message)" "WARNING"
+    }
+    
+    Write-Log "All installation methods failed for $TargetIP" "ERROR"
+    Write-Log "Consider manually running: $installCommand" "INFO"
+    return $null
 }
 
 function Monitor-Installation {
     param([string]$TargetIP, [int]$ProcessId)
     
-    Write-Log "Monitoring installation on $TargetIP"
+    Write-Log "Monitoring installation on $TargetIP (ProcessId: $ProcessId)"
     
     $maxCycles = $Global:DeploymentConfig.MaxMonitoringCycles
     $interval = $Global:DeploymentConfig.MonitoringInterval
@@ -248,18 +388,51 @@ function Monitor-Installation {
     for ($i = 1; $i -le $maxCycles; $i++) {
         Start-Sleep -Seconds $interval
         
+        $processFound = $false
+        
+        # Method 1: Try WMI
         try {
-            $processes = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object { $_.Name -eq "EndpointBasecamp.exe" }
-            
+            $processes = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop | Where-Object { $_.Name -eq "EndpointBasecamp.exe" }
             if ($processes) {
-                Write-Log "[$i/$maxCycles] Installation still running on $TargetIP"
-            } else {
-                Write-Log "[$i/$maxCycles] Installation process completed on $TargetIP" "SUCCESS"
-                break
+                $processFound = $true
+                Write-Log "[$i/$maxCycles] Installation still running on $TargetIP (WMI)" "INFO"
             }
         } catch {
-            Write-Log "[$i/$maxCycles] Error monitoring $TargetIP" "WARNING"
+            # Method 2: Try CIM as fallback
+            try {
+                $session = New-CimSession -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
+                $processes = Get-CimInstance -CimSession $session -ClassName Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq "EndpointBasecamp.exe" }
+                Remove-CimSession $session
+                if ($processes) {
+                    $processFound = $true
+                    Write-Log "[$i/$maxCycles] Installation still running on $TargetIP (CIM)" "INFO"
+                }
+            } catch {
+                # Method 3: Try PowerShell Remoting
+                try {
+                    $result = Invoke-Command -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ScriptBlock {
+                        Get-Process -Name "EndpointBasecamp" -ErrorAction SilentlyContinue
+                    } -ErrorAction Stop
+                    if ($result) {
+                        $processFound = $true
+                        Write-Log "[$i/$maxCycles] Installation still running on $TargetIP (PS Remoting)" "INFO"
+                    }
+                } catch {
+                    Write-Log "[$i/$maxCycles] Unable to monitor $TargetIP - all methods failed" "WARNING"
+                    # Continue monitoring anyway - installation might still be running
+                    continue
+                }
+            }
         }
+        
+        if (-not $processFound) {
+            Write-Log "[$i/$maxCycles] Installation process completed on $TargetIP" "SUCCESS"
+            break
+        }
+    }
+    
+    if ($i -gt $maxCycles) {
+        Write-Log "Installation monitoring timeout reached for $TargetIP" "WARNING"
     }
 }
 
@@ -526,6 +699,12 @@ function Get-TargetHosts {
 Write-Host "Vision One Endpoint Security Agent Deployment Tool" -ForegroundColor Cyan
 Write-Host ""
 
+# Show WMI troubleshooting help if requested
+if ($ShowWMIHelp) {
+    Show-WMITroubleshootingHelp
+    exit 0
+}
+
 if (-not (Test-InstallerAvailability)) {
     Write-Host "Deployment cannot proceed without a valid installer." -ForegroundColor Red
     exit 1
@@ -550,6 +729,11 @@ if (-not $targetHosts) {
     Write-Host "  -TestOnly          : Test connectivity only, don't deploy"
     Write-Host "  -Parallel          : Deploy to multiple hosts simultaneously"
     Write-Host "  -MaxParallel       : Maximum parallel deployments (default: 5)"
+    Write-Host "  -ShowWMIHelp       : Display WMI troubleshooting guide"
+    Write-Host ""
+    Write-Host "WMI Troubleshooting:" -ForegroundColor Cyan
+    Write-Host "  If experiencing WMI connection issues, run:"
+    Write-Host "  .\Deploy-VisionOne.ps1 -ShowWMIHelp"
     exit 1
 }
 
