@@ -9,13 +9,13 @@ $Global:DeploymentConfig = @{
     RemoteTempPath = "C$\temp\Trend Micro\V1ES"
     
     # Installation Settings
-    InstallationTimeout = 600  # 10 minutes
-    MonitoringInterval = 30    # 30 seconds
-    MaxMonitoringCycles = 6    # 3 minutes total
+    InstallationTimeout = 1200  # 20 minutes (doubled from 10)
+    MonitoringInterval = 30     # 30 seconds (keeping same for responsiveness)
+    MaxMonitoringCycles = 12    # 6 minutes total (doubled from 3)
     
     # Pre-installation Checks
     CheckExistingTrendMicro = $true    # Check for existing Trend Micro products
-    SkipIfExisting = $false            # Set to $true to skip installation if existing products found
+    SkipIfExisting = $true             # Set to $true to skip installation if existing products found
     ForceInstallation = $false         # Set to $true to install even if existing products found
     
     # Network Scanning

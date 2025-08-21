@@ -18,6 +18,15 @@ param(
     [switch]$ConfigureTrustedHosts
 )
 
+# Trap handler to ensure TrustedHosts is restored on script exit
+trap {
+    Write-Host "Script interrupted. Restoring TrustedHosts..." -ForegroundColor Yellow
+    if (Get-Variable -Name OriginalTrustedHosts -Scope Global -ErrorAction SilentlyContinue) {
+        Restore-TrustedHosts
+    }
+    break
+}
+
 # Load configuration
 . .\Config.ps1
 
@@ -60,6 +69,46 @@ function Write-Log {
         default { "White" }
     }
     Write-Host "[$timestamp] $Message" -ForegroundColor $color
+}
+
+function Test-IsLocalMachine {
+    param([string]$TargetIP)
+    
+    # Get local machine information
+    $localHostname = $env:COMPUTERNAME
+    $localFQDN = [System.Net.Dns]::GetHostByName($env:COMPUTERNAME).HostName
+    
+    # Get local IP addresses
+    $localIPs = @()
+    try {
+        $networkAdapters = Get-WmiObject -Class Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true }
+        foreach ($adapter in $networkAdapters) {
+            if ($adapter.IPAddress) {
+                $localIPs += $adapter.IPAddress
+            }
+        }
+    } catch {
+        # Fallback method
+        $localIPs += (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike "*Loopback*" }).IPAddress
+    }
+    
+    # Add common local addresses
+    $localIPs += @("127.0.0.1", "localhost", "::1")
+    
+    # Check if target matches any local identifier
+    $isLocal = ($TargetIP -eq $localHostname) -or 
+               ($TargetIP -eq $localFQDN) -or 
+               ($TargetIP -in $localIPs) -or
+               ($TargetIP -eq "localhost") -or
+               ($TargetIP -eq "127.0.0.1")
+    
+    if ($isLocal) {
+        Write-Log "Detected local connection for $TargetIP" "INFO"
+    } else {
+        Write-Log "Detected remote connection for $TargetIP" "INFO"
+    }
+    
+    return $isLocal
 }
 
 function Show-WMITroubleshootingHelp {
@@ -123,13 +172,97 @@ function Initialize-WinRMSettings {
         
         if ([string]::IsNullOrEmpty($currentTrustedHosts) -or $currentTrustedHosts -eq "") {
             Write-Log "TrustedHosts is empty. This may cause IP address connection issues." "WARNING"
-            Write-Log "Consider running: Set-Item WSMan:\localhost\Client\TrustedHosts -Value '*' -Force" "INFO"
+            Write-Log "TrustedHosts will be automatically configured based on target network." "INFO"
         }
         
         return $true
     } catch {
         Write-Log "Failed to configure WinRM settings: $($_.Exception.Message)" "WARNING"
         return $false
+    }
+}
+
+function Set-TrustedHostsForCIDR {
+    param([string]$CIDR)
+    
+    Write-Log "Configuring TrustedHosts for network: $CIDR" "INFO"
+    
+    try {
+        # Store original TrustedHosts value
+        $originalTrustedHosts = (Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction SilentlyContinue).Value
+        $Global:OriginalTrustedHosts = $originalTrustedHosts
+        
+        # Convert CIDR to wildcard pattern for TrustedHosts
+        $trustedPattern = Convert-CIDRToTrustedPattern $CIDR
+        
+        # Set new TrustedHosts value
+        if ([string]::IsNullOrEmpty($originalTrustedHosts)) {
+            Write-Log "Setting TrustedHosts to: $trustedPattern" "INFO"
+            Set-Item WSMan:\localhost\Client\TrustedHosts -Value $trustedPattern -Force
+        } else {
+            Write-Log "Adding to existing TrustedHosts: $trustedPattern" "INFO"
+            $newValue = "$originalTrustedHosts,$trustedPattern"
+            Set-Item WSMan:\localhost\Client\TrustedHosts -Value $newValue -Force
+        }
+        
+        Write-Log "TrustedHosts configured successfully" "SUCCESS"
+        return $true
+        
+    } catch {
+        Write-Log "Failed to configure TrustedHosts: $($_.Exception.Message)" "ERROR"
+        return $false
+    }
+}
+
+function Convert-CIDRToTrustedPattern {
+    param([string]$CIDR)
+    
+    if ($CIDR -match '^(\d+\.\d+\.\d+\.\d+)/(\d+)$') {
+        $networkIP = $matches[1]
+        $prefixLength = [int]$matches[2]
+        
+        # Convert to wildcard pattern based on prefix length
+        $octets = $networkIP.Split('.')
+        
+        switch ($prefixLength) {
+            8  { return "$($octets[0]).*" }
+            16 { return "$($octets[0]).$($octets[1]).*" }
+            24 { return "$($octets[0]).$($octets[1]).$($octets[2]).*" }
+            32 { return $networkIP }  # Single host
+            default {
+                # For other prefix lengths, use the network portion with wildcard
+                if ($prefixLength -le 8) { return "$($octets[0]).*" }
+                elseif ($prefixLength -le 16) { return "$($octets[0]).$($octets[1]).*" }
+                elseif ($prefixLength -le 24) { return "$($octets[0]).$($octets[1]).$($octets[2]).*" }
+                else { return $networkIP }
+            }
+        }
+    } elseif ($CIDR -match '^\d+\.\d+\.\d+\.\d+$') {
+        # Single IP address
+        return $CIDR
+    } else {
+        # Fallback - return as-is
+        return $CIDR
+    }
+}
+
+function Restore-TrustedHosts {
+    Write-Log "Restoring original TrustedHosts configuration..." "INFO"
+    
+    try {
+        if ($Global:OriginalTrustedHosts) {
+            Set-Item WSMan:\localhost\Client\TrustedHosts -Value $Global:OriginalTrustedHosts -Force
+            Write-Log "TrustedHosts restored to: $($Global:OriginalTrustedHosts)" "SUCCESS"
+        } else {
+            Set-Item WSMan:\localhost\Client\TrustedHosts -Value '' -Force
+            Write-Log "TrustedHosts cleared (was originally empty)" "SUCCESS"
+        }
+        
+        # Clear the global variable
+        Remove-Variable -Name OriginalTrustedHosts -Scope Global -ErrorAction SilentlyContinue
+        
+    } catch {
+        Write-Log "Failed to restore TrustedHosts: $($_.Exception.Message)" "WARNING"
     }
 }
 
@@ -201,10 +334,17 @@ function Test-WMIConnectivity {
     
     Write-Log "Testing WMI connectivity to $TargetIP"
     
+    $isLocal = Test-IsLocalMachine $TargetIP
+    
     # Method 1: Try standard WMI with timeout
     try {
         Write-Log "Attempting standard WMI connection..."
-        $computer = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
+        if ($isLocal) {
+            Write-Log "Detected local machine - using local WMI query"
+            $computer = Get-WmiObject -Class Win32_ComputerSystem -ErrorAction Stop
+        } else {
+            $computer = Get-WmiObject -Class Win32_ComputerSystem -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
+        }
         Write-Log "WMI connection successful to $($computer.Name)" "SUCCESS"
         return $true
     } catch {
@@ -214,9 +354,14 @@ function Test-WMIConnectivity {
     # Method 2: Try CIM (newer WMI) with WSMan
     try {
         Write-Log "Attempting CIM connection via WSMan..."
-        $session = New-CimSession -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
-        $computer = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem -ErrorAction Stop
-        Remove-CimSession $session
+        if ($isLocal) {
+            Write-Log "Detected local machine - using local CIM query"
+            $computer = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        } else {
+            $session = New-CimSession -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
+            $computer = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem -ErrorAction Stop
+            Remove-CimSession $session
+        }
         Write-Log "CIM connection successful to $($computer.Name)" "SUCCESS"
         return $true
     } catch {
@@ -226,10 +371,15 @@ function Test-WMIConnectivity {
     # Method 3: Try CIM with DCOM (fallback for older systems)
     try {
         Write-Log "Attempting CIM connection via DCOM..."
-        $sessionOption = New-CimSessionOption -Protocol Dcom
-        $session = New-CimSession -ComputerName $TargetIP -Credential $Global:DeploymentCredential -SessionOption $sessionOption -ErrorAction Stop
-        $computer = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem -ErrorAction Stop
-        Remove-CimSession $session
+        if ($isLocal) {
+            Write-Log "Detected local machine - using local CIM query"
+            $computer = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        } else {
+            $sessionOption = New-CimSessionOption -Protocol Dcom
+            $session = New-CimSession -ComputerName $TargetIP -Credential $Global:DeploymentCredential -SessionOption $sessionOption -ErrorAction Stop
+            $computer = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem -ErrorAction Stop
+            Remove-CimSession $session
+        }
         Write-Log "CIM via DCOM connection successful to $($computer.Name)" "SUCCESS"
         return $true
     } catch {
@@ -239,10 +389,15 @@ function Test-WMIConnectivity {
     # Method 4: Try PowerShell Remoting as final fallback
     try {
         Write-Log "Attempting PowerShell Remoting as WMI alternative..."
-        $result = Invoke-Command -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ScriptBlock {
-            Get-ComputerInfo | Select-Object ComputerName, WindowsVersion
-        } -ErrorAction Stop
-        Write-Log "PowerShell Remoting successful to $($result.ComputerName)" "SUCCESS"
+        if ($isLocal) {
+            Write-Log "Detected local machine - using local computer info"
+            $result = Get-ComputerInfo | Select-Object ComputerName, WindowsVersion
+        } else {
+            $result = Invoke-Command -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ScriptBlock {
+                Get-ComputerInfo | Select-Object ComputerName, WindowsVersion
+            } -ErrorAction Stop
+        }
+        Write-Log "Connection successful to $($result.ComputerName)" "SUCCESS"
         return $true
     } catch {
         Write-Log "PowerShell Remoting failed: $($_.Exception.Message)" "WARNING"
@@ -263,9 +418,20 @@ function Copy-InstallerFiles {
     
     Write-Log "Copying installer files to $TargetIP"
     
+    # Check if this is a local connection
+    $isLocal = Test-IsLocalMachine $TargetIP
+    Write-Log "Copy-InstallerFiles: isLocal = $isLocal for $TargetIP" "INFO"
+    
     try {
         $sourceDir = $Global:DeploymentConfig.InstallerDirectory
-        $targetDir = "\\$TargetIP\$($Global:DeploymentConfig.RemoteTempPath)"
+        
+        if ($isLocal) {
+            # Local connection - use local paths
+            $targetDir = $Global:DeploymentConfig.RemoteTempPath.Replace('C$', 'C:')
+        } else {
+            # Remote connection - use UNC paths
+            $targetDir = "\\$TargetIP\$($Global:DeploymentConfig.RemoteTempPath)"
+        }
         
         if (Test-Path $targetDir) {
             Remove-Item "$targetDir\*" -Recurse -Force -ErrorAction SilentlyContinue
@@ -286,10 +452,52 @@ function Copy-InstallerFiles {
         Copy-Item -Path $zipFile.FullName -Destination $targetZipPath -Force
         Write-Log "Copied zip file to target machine"
         
-        # Try multiple methods for remote extraction
+        # Try multiple methods for extraction
         $extractionResult = $null
         
-        # Method 1: Try PowerShell Remoting with TrustedHosts configuration
+        if ($isLocal) {
+            # Method 1: Local extraction
+            Write-Log "Local connection detected - using local extraction method" "INFO"
+            try {
+                Write-Log "Attempting local file extraction..."
+                $extractPath = $Global:DeploymentConfig.RemoteTempPath.Replace('C$', 'C:')
+                Write-Log "Local extraction path: '$extractPath'" "INFO"
+                
+                if (-not (Test-Path $extractPath)) {
+                    Write-Log "Creating extraction directory: '$extractPath'" "INFO"
+                    New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+                } else {
+                    Write-Log "Extraction directory already exists: '$extractPath'" "INFO"
+                }
+                
+                Write-Log "Extracting from '$targetZipPath' to '$extractPath'" "INFO"
+                Add-Type -AssemblyName System.IO.Compression.FileSystem
+                [System.IO.Compression.ZipFile]::ExtractToDirectory($targetZipPath, $extractPath)
+                
+                $extractedFiles = Get-ChildItem -Path $extractPath -Recurse -File
+                $mainExe = Get-ChildItem -Path $extractPath -Name "*.exe" -Recurse | Select-Object -First 1
+                
+                $extractionResult = @{
+                    Success = $true
+                    FileCount = $extractedFiles.Count
+                    MainExecutable = $mainExe
+                }
+                
+                Write-Log "Local extraction successful. Files extracted: $($extractedFiles.Count)" "SUCCESS"
+                
+            } catch {
+                Write-Log "Local extraction failed: $($_.Exception.Message)" "WARNING"
+                Write-Log "Exception details: $($_.Exception.GetType().FullName)" "WARNING"
+                $extractionResult = @{
+                    Success = $false
+                    Error = $_.Exception.Message
+                }
+            }
+        }
+        
+        # Method 2: Try PowerShell Remoting with TrustedHosts configuration (for remote connections)
+        Write-Log "Extraction result check - isLocal: $isLocal, Success: $($extractionResult.Success)" "INFO"
+        if (-not $isLocal -or ($isLocal -and -not $extractionResult.Success)) {
         try {
             Write-Log "Attempting file extraction via PowerShell Remoting..."
             
@@ -331,7 +539,7 @@ function Copy-InstallerFiles {
                         Error = $_.Exception.Message
                     }
                 }
-            } -ArgumentList "C:\temp\VisionOneSEP\$($zipFile.Name)", "C:\temp\VisionOneSEP" -ErrorAction Stop
+            } -ArgumentList "C:\temp\Trend Micro\V1ES\$($zipFile.Name)", "C:\temp\Trend Micro\V1ES" -ErrorAction Stop
             
             # Restore original TrustedHosts if we modified it
             if ($needsRestore) {
@@ -346,18 +554,19 @@ function Copy-InstallerFiles {
             if ($needsRestore -and $originalTrustedHosts) {
                 Set-Item WSMan:\localhost\Client\TrustedHosts -Value $originalTrustedHosts -Force
             }
+        }
             
-            # Method 2: Try using UNC path with robocopy for extraction
+            # Method 3: Try using UNC path with robocopy for extraction
             try {
                 Write-Log "Attempting extraction via UNC path and robocopy..."
-                $remoteExtractPath = "\\$TargetIP\C$\temp\VisionOneSEP"
+                $remoteExtractPath = "\\$TargetIP\C$\temp\Trend Micro\V1ES"
                 
                 if (-not (Test-Path $remoteExtractPath)) {
                     New-Item -ItemType Directory -Path $remoteExtractPath -Force | Out-Null
                 }
                 
                 # Extract locally first, then copy
-                $localTempPath = "$env:TEMP\VisionOneSEP_$TargetIP"
+                $localTempPath = "$env:TEMP\V1ES_$TargetIP"
                 if (Test-Path $localTempPath) {
                     Remove-Item $localTempPath -Recurse -Force
                 }
@@ -404,7 +613,7 @@ function Copy-InstallerFiles {
             Write-Log "Successfully extracted $($extractionResult.FileCount) files on $TargetIP" "SUCCESS"
             if ($extractionResult.MainExecutable) {
                 Write-Log "Main executable: $($extractionResult.MainExecutable)" "SUCCESS"
-                $Global:DeploymentConfig.InstallerCommand = "C:\temp\VisionOneSEP\$($extractionResult.MainExecutable) /S /v`"/quiet /norestart`""
+                $Global:DeploymentConfig.InstallerCommand = "C:\temp\Trend Micro\V1ES\$($extractionResult.MainExecutable) /S /v`"/quiet /norestart`""
             }
             
             Remove-Item $targetZipPath -Force -ErrorAction SilentlyContinue
@@ -426,10 +635,20 @@ function Start-Installation {
     Write-Log "Starting installation on $TargetIP"
     $installCommand = $Global:DeploymentConfig.InstallerCommand
     
+    # Check if this is a local connection
+    $isLocal = Test-IsLocalMachine $TargetIP
+    
     # Method 1: Try WMI Win32_Process Create
     try {
         Write-Log "Attempting installation via WMI..."
-        $result = Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList $installCommand -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
+        
+        if ($isLocal) {
+            # Local connection - don't use credentials
+            $result = Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList $installCommand -ErrorAction Stop
+        } else {
+            # Remote connection - use credentials
+            $result = Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList $installCommand -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
+        }
         
         if ($result.ReturnValue -eq 0) {
             Write-Log "Installation started successfully via WMI on $TargetIP (ProcessId: $($result.ProcessId))" "SUCCESS"
@@ -444,9 +663,16 @@ function Start-Installation {
     # Method 2: Try CIM Win32_Process Create
     try {
         Write-Log "Attempting installation via CIM..."
-        $session = New-CimSession -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
-        $result = Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$installCommand} -ErrorAction Stop
-        Remove-CimSession $session
+        
+        if ($isLocal) {
+            # Local connection - don't use credentials
+            $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$installCommand} -ErrorAction Stop
+        } else {
+            # Remote connection - use credentials
+            $session = New-CimSession -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop
+            $result = Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$installCommand} -ErrorAction Stop
+            Remove-CimSession $session
+        }
         
         if ($result.ReturnValue -eq 0) {
             Write-Log "Installation started successfully via CIM on $TargetIP (ProcessId: $($result.ProcessId))" "SUCCESS"
@@ -458,22 +684,29 @@ function Start-Installation {
         Write-Log "CIM installation method failed: $($_.Exception.Message)" "WARNING"
     }
     
-    # Method 3: Try PowerShell Remoting
+    # Method 3: Try PowerShell Remoting or local execution
     try {
-        Write-Log "Attempting installation via PowerShell Remoting..."
-        $result = Invoke-Command -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ScriptBlock {
-            param($Command)
-            $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$Command`"" -PassThru -WindowStyle Hidden
-            return @{
-                ProcessId = $process.Id
-                ProcessName = $process.ProcessName
-            }
-        } -ArgumentList $installCommand -ErrorAction Stop
-        
-        Write-Log "Installation started successfully via PowerShell Remoting on $TargetIP (ProcessId: $($result.ProcessId))" "SUCCESS"
-        return $result.ProcessId
+        if ($isLocal) {
+            Write-Log "Attempting local installation via Start-Process..."
+            $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$installCommand`"" -PassThru -WindowStyle Hidden
+            Write-Log "Installation started successfully locally on $TargetIP (ProcessId: $($process.Id))" "SUCCESS"
+            return $process.Id
+        } else {
+            Write-Log "Attempting installation via PowerShell Remoting..."
+            $result = Invoke-Command -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ScriptBlock {
+                param($Command)
+                $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$Command`"" -PassThru -WindowStyle Hidden
+                return @{
+                    ProcessId = $process.Id
+                    ProcessName = $process.ProcessName
+                }
+            } -ArgumentList $installCommand -ErrorAction Stop
+            
+            Write-Log "Installation started successfully via PowerShell Remoting on $TargetIP (ProcessId: $($result.ProcessId))" "SUCCESS"
+            return $result.ProcessId
+        }
     } catch {
-        Write-Log "PowerShell Remoting installation method failed: $($_.Exception.Message)" "WARNING"
+        Write-Log "PowerShell Remoting/local installation method failed: $($_.Exception.Message)" "WARNING"
     }
     
     # Method 4: Try PsExec as final fallback (if available)
@@ -517,7 +750,16 @@ function Monitor-Installation {
         
         # Method 1: Try WMI
         try {
-            $processes = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop | Where-Object { $_.Name -eq "EndpointBasecamp.exe" }
+            $isLocal = Test-IsLocalMachine $TargetIP
+            
+            if ($isLocal) {
+                # Local connection - don't use credentials
+                $processes = Get-WmiObject -Class Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq "EndpointBasecamp.exe" }
+            } else {
+                # Remote connection - use credentials
+                $processes = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential -ErrorAction Stop | Where-Object { $_.Name -eq "EndpointBasecamp.exe" }
+            }
+            
             if ($processes) {
                 $processFound = $true
                 Write-Log "[$i/$maxCycles] Installation still running on $TargetIP (WMI)" "INFO"
@@ -566,13 +808,28 @@ function Test-ExistingTrendMicro {
     
     Write-Log "Checking for existing Trend Micro products on $TargetIP"
     
+    $isLocal = Test-IsLocalMachine $TargetIP
+    
     try {
-        $trendProcesses = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object { 
-            $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*"
-        }
-        
-        $installedSoftware = Get-WmiObject -Class Win32_Product -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object {
-            $_.Name -like "*Trend Micro*" -or $_.Name -like "*Apex One*" -or $_.Name -like "*Vision One*"
+        # Use different WMI calls for local vs remote machines
+        if ($isLocal) {
+            Write-Log "Detected local machine - using local WMI queries"
+            $trendProcesses = Get-WmiObject -Class Win32_Process | Where-Object { 
+                $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*"
+            }
+            
+            $installedSoftware = Get-WmiObject -Class Win32_Product | Where-Object {
+                $_.Name -like "*Trend Micro*" -or $_.Name -like "*Apex One*" -or $_.Name -like "*Vision One*"
+            }
+        } else {
+            Write-Log "Detected remote machine - using remote WMI queries"
+            $trendProcesses = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object { 
+                $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*"
+            }
+            
+            $installedSoftware = Get-WmiObject -Class Win32_Product -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object {
+                $_.Name -like "*Trend Micro*" -or $_.Name -like "*Apex One*" -or $_.Name -like "*Vision One*"
+            }
         }
         
         $existingProducts = @()
@@ -622,8 +879,18 @@ function Test-InstallationSuccess {
     Write-Log "Checking for Vision One processes on $TargetIP"
     
     try {
-        $visionProcesses = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object { 
-            $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*"
+        $isLocal = Test-IsLocalMachine $TargetIP
+        
+        if ($isLocal) {
+            # Local connection - don't use credentials
+            $visionProcesses = Get-WmiObject -Class Win32_Process | Where-Object { 
+                $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*"
+            }
+        } else {
+            # Remote connection - use credentials
+            $visionProcesses = Get-WmiObject -Class Win32_Process -ComputerName $TargetIP -Credential $Global:DeploymentCredential | Where-Object { 
+                $_.Name -like "*Trend*" -or $_.Name -like "*Vision*" -or $_.Name -like "*Apex*"
+            }
         }
         
         if ($visionProcesses) {
@@ -657,14 +924,15 @@ function Deploy-ToSingleHost {
         
         if ($existingCheck.HasExisting) {
             Write-Log "Existing Trend Micro products detected on $TargetIP" "WARNING"
+            Write-Log "Configuration: SkipIfExisting=$($Global:DeploymentConfig.SkipIfExisting), ForceInstallation=$($Global:DeploymentConfig.ForceInstallation)" "INFO"
             
             if ($Global:DeploymentConfig.SkipIfExisting -and -not $Global:DeploymentConfig.ForceInstallation) {
-                Write-Log "Skipping installation on $TargetIP due to existing products" "WARNING"
+                Write-Log "SKIPPING installation on $TargetIP due to existing Trend Micro products" "SUCCESS"
                 return $true
-            } elseif (-not $Global:DeploymentConfig.ForceInstallation) {
-                Write-Log "Proceeding with installation on $TargetIP despite existing products" "WARNING"
+            } elseif ($Global:DeploymentConfig.ForceInstallation) {
+                Write-Log "FORCE installation enabled - proceeding with installation on $TargetIP" "WARNING"
             } else {
-                Write-Log "Force installation enabled - proceeding with installation on $TargetIP" "INFO"
+                Write-Log "PROCEEDING with installation on $TargetIP despite existing products (SkipIfExisting=false)" "WARNING"
             }
         } else {
             Write-Log "No existing Trend Micro products found on $TargetIP" "SUCCESS"
@@ -894,6 +1162,31 @@ if (-not $targetHosts) {
 Write-Host "Target hosts identified: $($targetHosts.Count)" -ForegroundColor Green
 $targetHosts | ForEach-Object { Write-Host "  - $_" -ForegroundColor White }
 
+# Configure TrustedHosts for the target network
+if ($CIDR) {
+    $trustedHostsConfigured = Set-TrustedHostsForCIDR $CIDR
+    if (-not $trustedHostsConfigured) {
+        Write-Log "Warning: TrustedHosts configuration failed. PowerShell Remoting may not work properly." "WARNING"
+    }
+} elseif ($TargetIPs) {
+    # For individual IPs, create a pattern
+    $ipPattern = ($TargetIPs | ForEach-Object { $_ }) -join ','
+    Write-Log "Configuring TrustedHosts for specific IPs: $ipPattern" "INFO"
+    try {
+        $originalTrustedHosts = (Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction SilentlyContinue).Value
+        $Global:OriginalTrustedHosts = $originalTrustedHosts
+        
+        if ([string]::IsNullOrEmpty($originalTrustedHosts)) {
+            Set-Item WSMan:\localhost\Client\TrustedHosts -Value $ipPattern -Force
+        } else {
+            Set-Item WSMan:\localhost\Client\TrustedHosts -Value "$originalTrustedHosts,$ipPattern" -Force
+        }
+        Write-Log "TrustedHosts configured for target IPs" "SUCCESS"
+    } catch {
+        Write-Log "Failed to configure TrustedHosts for IPs: $($_.Exception.Message)" "WARNING"
+    }
+}
+
 if ($TestOnly) {
     Write-Host "TEST MODE: Connectivity Testing Only" -ForegroundColor Yellow
 }
@@ -1077,6 +1370,9 @@ if ($TestOnly) {
 } else {
     Write-Host "Deployment completed. Check individual host logs above for details." -ForegroundColor White
 }
+
+# Restore original TrustedHosts configuration
+Restore-TrustedHosts
 
 Write-Host ""
 Write-Host "For troubleshooting, check:" -ForegroundColor Gray
