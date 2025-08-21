@@ -1,5 +1,7 @@
 # Security Considerations for Vision One Endpoint Security Agent Deployment Tool
 
+> **⚠️ NETWORK SECURITY**: For detailed analysis of credential transmission security and advanced protection measures, see [NETWORK_SECURITY.md](NETWORK_SECURITY.md)
+
 ## Deployment Method Risk Assessment
 
 ### 1. WMI (Windows Management Instrumentation) - **RECOMMENDED**

@@ -270,6 +270,14 @@ Enter domain name (e.g., CONTOSO, your.domain.com): CONTOSO
 - Consider running from a secure administrative workstation
 - Credentials are automatically cleared from memory when script completes
 
+### **Network Security Considerations**
+- **Default protocols may transmit credentials over unencrypted channels**
+- For high-security environments, see [NETWORK_SECURITY.md](NETWORK_SECURITY.md) for:
+  - HTTPS WinRM configuration
+  - SMB encryption setup
+  - Certificate-based authentication
+  - Network traffic analysis and protection
+
 ## 📞 **Support**
 
 For issues or questions:
