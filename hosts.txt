@@ -1,7 +1,15 @@
-# Vision One Endpoint Security Agent Target Hosts
-# Add one IP address per line
-# Lines starting with # are ignored
-
-10.0.5.127
+# Sample hosts file for Vision One Endpoint Security Agent deployment
+# 
+# Instructions:
+# - Add one IP address or hostname per line
+# - Lines starting with # are comments and will be ignored
+# - Empty lines are ignored
+# - Use this file with: .\Deploy-VisionOne.ps1 -TargetFile hosts.txt
+#
+# Examples:
+# 10.0.5.127
 # 10.0.5.128
-# 10.0.5.129
+# server01.domain.com
+# workstation-01
+
+# Add your target hosts below:
