@@ -19,7 +19,7 @@
 #   .\Deploy-VisionOne.ps1 -CIDR '10.0.5.0/24' -TestOnly
 #
 # REQUIREMENTS:
-#   - Script will prompt for domain credentials securely (no plaintext storage)
+#   - Edit Config.ps1 with your domain credentials before use
 #   - Place your unique Vision One Endpoint Security Agent installer ZIP in the installer/ directory
 #   - Run configure_target_machine.bat on target machines
 #   - PowerShell execution policy: RemoteSigned or Bypass
@@ -253,7 +253,7 @@ function Copy-InstallerFiles {
             Write-Log "No zip files found in $sourceDir" "ERROR"
             return $false
         } elseif ($zipFiles.Count -gt 1) {
-            Write-Log "Multiple zip files found in ${sourceDir}:" "WARNING"
+            Write-Log "Multiple zip files found in $sourceDir:" "WARNING"
             $zipFiles | ForEach-Object { Write-Log "  - $($_.Name) ($(Get-Date $_.LastWriteTime -Format 'yyyy-MM-dd HH:mm:ss'))" "WARNING" }
             
             # Smart selection: prefer files without (1), (2), etc. suffixes
@@ -319,7 +319,7 @@ function Copy-InstallerFiles {
                     Error = $_.Exception.Message
                 }
             }
-        } -ArgumentList "C:\temp\Trend Micro\V1ES\$($zipFile.Name)", "C:\temp\Trend Micro\V1ES"
+        } -ArgumentList "C:\temp\VisionOneSEP\$($zipFile.Name)", "C:\temp\VisionOneSEP"
         
         if ($extractionResult.Success) {
             Write-Log "Successfully extracted $($extractionResult.FileCount) files on $TargetIP" "SUCCESS"
@@ -327,7 +327,7 @@ function Copy-InstallerFiles {
                 Write-Log "Main executable: $($extractionResult.MainExecutable)" "SUCCESS"
                 
                 # Update the installer command in config to use the found executable
-                $Global:DeploymentConfig.InstallerCommand = "C:\temp\Trend Micro\V1ES\$($extractionResult.MainExecutable) /S /v`"/quiet /norestart`""
+                $Global:DeploymentConfig.InstallerCommand = "C:\temp\VisionOneSEP\$($extractionResult.MainExecutable) /S /v`"/quiet /norestart`""
             }
             
             # Clean up zip file
